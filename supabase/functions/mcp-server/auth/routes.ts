@@ -12,18 +12,24 @@ function getSupabaseProjectUrl(requestUrl: string) {
 
 function buildMcpResourceUrl(requestUrl: string) {
   return requestUrl
+    .replace(/\/metadata$/, "/mcp")
+    .replace(/\/.well-known\/oauth-protected-resource$/, "/mcp")
     .replace(/\/auth\/metadata$/, "/mcp")
     .replace(/\/auth\/.well-known\/oauth-protected-resource$/, "/mcp");
 }
 
 export function buildMetadataUrl(requestUrl: string) {
   return requestUrl
-    .replace(/\/mcp$/, "/auth/metadata")
-    .replace(/\/auth\/.well-known\/oauth-protected-resource$/, "/auth/metadata");
+    .replace(/\/mcp$/, "/.well-known/oauth-protected-resource")
+    .replace(/\/metadata$/, "/.well-known/oauth-protected-resource")
+    .replace(/\/auth\/metadata$/, "/.well-known/oauth-protected-resource")
+    .replace(/\/auth\/.well-known\/oauth-protected-resource$/, "/.well-known/oauth-protected-resource");
 }
 
 function buildResourceDocumentationUrl(requestUrl: string) {
   return requestUrl
+    .replace(/\/metadata$/, "/")
+    .replace(/\/.well-known\/oauth-protected-resource$/, "/")
     .replace(/\/auth\/metadata$/, "/")
     .replace(/\/auth\/.well-known\/oauth-protected-resource$/, "/");
 }
@@ -42,6 +48,14 @@ function createProtectedResourceMetadata(requestUrl: string): ProtectedResourceM
 }
 
 export function registerAuthRoutes(app: Hono<{ Variables: AuthAppVariables }>) {
+  app.get("/metadata", (c) => {
+    return c.json(createProtectedResourceMetadata(c.req.url));
+  });
+
+  app.get("/.well-known/oauth-protected-resource", (c) => {
+    return c.json(createProtectedResourceMetadata(c.req.url));
+  });
+
   app.get("/auth/metadata", (c) => {
     return c.json(createProtectedResourceMetadata(c.req.url));
   });

@@ -44,7 +44,7 @@ mcpApp.get("/", (c) => {
     endpoints: {
       mcp: "/mcp",
       health: "/health",
-      authMetadata: "/auth/metadata",
+      authMetadata: "/.well-known/oauth-protected-resource",
       authUi: "/auth/authorize",
     },
   });

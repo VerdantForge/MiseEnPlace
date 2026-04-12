@@ -17,6 +17,8 @@ supabase start
 supabase functions serve --no-verify-jwt mcp-server
 ```
 
+The function keeps Supabase's platform JWT check disabled and instead validates OAuth user access tokens inside the `/mcp` handler.
+
 The MCP server will be available at:
 - Main endpoint: `http://localhost:54321/functions/v1/mcp-server/mcp`
 - Health check: `http://localhost:54321/functions/v1/mcp-server/health`
@@ -45,6 +47,7 @@ supabase/
 ### Test MCP Protocol
 ```bash
 curl -X POST \
+  -H 'Authorization: Bearer <supabase-user-access-token>' \
   -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"sum","arguments": {"a":2,"b":3}},"id":1}' \
   http://localhost:54321/functions/v1/mcp-server/mcp
@@ -81,6 +84,8 @@ mcp.tool("myTool", {
 ```bash
 supabase functions deploy mcp-server
 ```
+
+The deployed function expects `SUPABASE_URL` and `SUPABASE_ANON_KEY` to be available so it can validate incoming bearer tokens with Supabase Auth.
 
 2. **Your MCP server will be available at**:
 ```

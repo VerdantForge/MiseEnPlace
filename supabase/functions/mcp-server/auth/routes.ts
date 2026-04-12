@@ -3,7 +3,7 @@ import type { Hono } from "hono";
 import {
   handleAuthorizationDecision,
   handleAuthorizationUi,
-} from "./handler.ts";
+} from "./authorization-ui.ts";
 import type { AuthAppVariables, ProtectedResourceMetadata } from "./types.ts";
 
 const PUBLIC_FUNCTION_PREFIX = "/functions/v1";

@@ -6,21 +6,13 @@ import { Hono } from "hono";
 import { McpServer, StreamableHttpTransport } from "mcp-lite";
 import { z } from "zod";
 
-type SupabaseAuthUser = {
-  id: string;
-  aud?: string;
-  email?: string | null;
-  role?: string;
-  [key: string]: unknown;
-};
-
-type TokenValidationResult =
-  | { ok: true; user: SupabaseAuthUser }
-  | { ok: false; status: 401 | 500; message: string };
+import { createAuthMiddleware } from "./auth/middleware.ts";
+import { buildMetadataUrl, registerAuthRoutes } from "./auth/routes.ts";
+import type { AuthAppVariables } from "./auth/types.ts";
 
 // We create two Hono instances:
 // 1. `app` is the root handler for the Supabase Edge Function (must match the function name, e.g. /mcp-server)
-// 2. `mcpApp` handles the MCP protocol and health endpoints, mounted under the function route
+// 2. `mcpApp` handles the MCP protocol and companion auth routes, mounted under the function route
 // This pattern is required because Supabase Edge Functions route all requests to /<function-name>/*
 
 const mcp = new McpServer({
@@ -44,62 +36,7 @@ const transport = new StreamableHttpTransport();
 const httpHandler = transport.bind(mcp);
 
 const app = new Hono();
-
-const mcpApp = new Hono<{
-  Variables: {
-    authUser: SupabaseAuthUser;
-  };
-}>();
-
-async function validateAccessToken(accessToken: string): Promise<TokenValidationResult> {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
-
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY for token validation");
-    return {
-      ok: false,
-      status: 500,
-      message: "OAuth validation is not configured on this server",
-    };
-  }
-
-  try {
-    const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        apikey: supabaseAnonKey,
-      },
-    });
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: 401,
-        message: "Invalid or expired access token",
-      };
-    }
-
-    const user = (await response.json()) as SupabaseAuthUser;
-
-    if (!user.id) {
-      return {
-        ok: false,
-        status: 401,
-        message: "Token did not resolve to a valid user",
-      };
-    }
-
-    return { ok: true, user };
-  } catch (error) {
-    console.error("Failed to validate OAuth access token", error);
-    return {
-      ok: false,
-      status: 500,
-      message: "Failed to validate access token",
-    };
-  }
-}
+const mcpApp = new Hono<{ Variables: AuthAppVariables }>();
 
 mcpApp.get("/", (c) => {
   return c.json({
@@ -107,6 +44,8 @@ mcpApp.get("/", (c) => {
     endpoints: {
       mcp: "/mcp",
       health: "/health",
+      authMetadata: "/auth/metadata",
+      authUi: "/auth/authorize",
     },
   });
 });
@@ -117,52 +56,9 @@ mcpApp.get("/health", (c) => {
   });
 });
 
-mcpApp.use("/mcp", async (c, next) => {
-  if (c.req.method === "OPTIONS") {
-    return c.body(null, 204);
-  }
+registerAuthRoutes(mcpApp);
 
-  const authorization = c.req.header("authorization");
-
-  if (!authorization?.startsWith("Bearer ")) {
-    return c.json(
-      {
-        error: "unauthorized",
-        message: "Missing bearer access token",
-      },
-      401,
-    );
-  }
-
-  const accessToken = authorization.slice("Bearer ".length).trim();
-
-  if (!accessToken) {
-    return c.json(
-      {
-        error: "unauthorized",
-        message: "Missing bearer access token",
-      },
-      401,
-    );
-  }
-
-  const validationResult = await validateAccessToken(accessToken);
-
-  if (!validationResult.ok) {
-    return c.json(
-      {
-        error: validationResult.status === 401 ? "unauthorized" : "server_error",
-        message: validationResult.message,
-      },
-      validationResult.status,
-    );
-  }
-
-  c.set("authUser", validationResult.user);
-  await next();
-});
-
-
+mcpApp.use("/mcp", createAuthMiddleware({ metadataUrl: buildMetadataUrl }));
 
 mcpApp.all("/mcp", async (c) => {
   const response = await httpHandler(c.req.raw);

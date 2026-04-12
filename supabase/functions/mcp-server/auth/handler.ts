@@ -6,6 +6,54 @@ import type {
   ConsentResponse,
 } from "./types.ts";
 
+const ACCESS_TOKEN_COOKIE = "mcp_access_token";
+const REFRESH_TOKEN_COOKIE = "mcp_refresh_token";
+const AUTH_COOKIE_PATH = "/functions/v1/mcp-server/auth";
+const PUBLIC_FUNCTION_PREFIX = "/functions/v1";
+const INTERNAL_FUNCTION_PREFIX = "/mcp-server";
+
+type SupabaseSessionResponse = {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  error?: string;
+  error_description?: string;
+  msg?: string;
+  message?: string;
+};
+
+function getPublicRequestUrl(request: Request) {
+  const internalUrl = new URL(request.url);
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  const forwardedPort = request.headers.get("x-forwarded-port");
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+  const host = forwardedHost ?? request.headers.get("host");
+  const protocol = forwardedProto ?? (origin ? new URL(origin).protocol.replace(/:$/, "") : internalUrl.protocol.replace(/:$/, ""));
+  const publicPathname = internalUrl.pathname.startsWith(INTERNAL_FUNCTION_PREFIX)
+    ? `${PUBLIC_FUNCTION_PREFIX}${internalUrl.pathname}`
+    : internalUrl.pathname;
+
+  if (origin) {
+    return new URL(`${origin}${publicPathname}${internalUrl.search}`);
+  }
+
+  if (referer) {
+    return new URL(`${new URL(referer).origin}${publicPathname}${internalUrl.search}`);
+  }
+
+  if (host) {
+    const hostWithPort = forwardedPort && !host.includes(":")
+      ? `${host}:${forwardedPort}`
+      : host;
+
+    return new URL(`${protocol}://${hostWithPort}${publicPathname}${internalUrl.search}`);
+  }
+
+  return new URL(`${internalUrl.origin}${publicPathname}${internalUrl.search}`);
+}
+
 function getSupabaseAuthBaseUrl() {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
 
@@ -26,29 +74,67 @@ function getSupabaseAnonKey() {
   return supabaseAnonKey;
 }
 
-function buildSupabaseHeaders(request: Request) {
-  const url = new URL(request.url);
+function getCookieValue(request: Request, name: string) {
+  const cookieHeader = request.headers.get("cookie");
+
+  if (!cookieHeader) {
+    return null;
+  }
+
+  for (const cookiePart of cookieHeader.split(";")) {
+    const [cookieName, ...cookieValueParts] = cookiePart.trim().split("=");
+
+    if (cookieName === name) {
+      return cookieValueParts.join("=");
+    }
+  }
+
+  return null;
+}
+
+function getAccessToken(request: Request) {
+  const authorization = request.headers.get("authorization");
+
+  if (authorization?.startsWith("Bearer ")) {
+    return authorization.slice("Bearer ".length).trim();
+  }
+
+  return getCookieValue(request, ACCESS_TOKEN_COOKIE);
+}
+
+function buildSupabaseHeaders(
+  request: Request,
+  options?: {
+    accessToken?: string | null;
+    includeCookies?: boolean;
+    includeAuthorization?: boolean;
+  },
+) {
+  const publicUrl = getPublicRequestUrl(request);
   const headers = new Headers({
     accept: "application/json",
     apikey: getSupabaseAnonKey(),
-    origin: url.origin,
-    referer: request.url,
+    origin: publicUrl.origin,
+    referer: publicUrl.toString(),
   });
 
+  const includeCookies = options?.includeCookies ?? true;
+  const includeAuthorization = options?.includeAuthorization ?? true;
+
   const cookie = request.headers.get("cookie");
-  if (cookie) {
+  if (includeCookies && cookie) {
     headers.set("cookie", cookie);
   }
 
-  const authorization = request.headers.get("authorization");
-  if (authorization) {
-    headers.set("authorization", authorization);
+  const accessToken = options?.accessToken ?? getAccessToken(request);
+  if (includeAuthorization && accessToken) {
+    headers.set("authorization", `Bearer ${accessToken}`);
   }
 
   return headers;
 }
 
-async function fetchAuthorizationDetails(request: Request, authorizationId: string) {
+function fetchAuthorizationDetails(request: Request, authorizationId: string) {
   return fetch(
     `${getSupabaseAuthBaseUrl()}/oauth/authorizations/${encodeURIComponent(authorizationId)}`,
     {
@@ -58,7 +144,7 @@ async function fetchAuthorizationDetails(request: Request, authorizationId: stri
   );
 }
 
-async function submitConsentDecision(
+function submitConsentDecision(
   request: Request,
   authorizationId: string,
   action: ConsentAction,
@@ -76,6 +162,71 @@ async function submitConsentDecision(
   );
 }
 
+function signInWithPassword(request: Request, email: string, password: string) {
+  const headers = buildSupabaseHeaders(request, {
+    includeCookies: false,
+    includeAuthorization: false,
+  });
+  headers.set("content-type", "application/json");
+
+  return fetch(`${getSupabaseAuthBaseUrl()}/token?grant_type=password`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+function buildSetCookieValue(name: string, value: string, maxAge?: number) {
+  const cookieParts = [
+    `${name}=${value}`,
+    `Path=${AUTH_COOKIE_PATH}`,
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+
+  if (typeof maxAge === "number") {
+    cookieParts.push(`Max-Age=${Math.max(0, Math.floor(maxAge))}`);
+  }
+
+  return cookieParts.join("; ");
+}
+
+function applySessionCookies(response: Response, session: SupabaseSessionResponse) {
+  if (session.access_token) {
+    response.headers.append(
+      "set-cookie",
+      buildSetCookieValue(ACCESS_TOKEN_COOKIE, session.access_token, session.expires_in),
+    );
+  }
+
+  if (session.refresh_token) {
+    response.headers.append(
+      "set-cookie",
+      buildSetCookieValue(REFRESH_TOKEN_COOKIE, session.refresh_token),
+    );
+  }
+}
+
+function clearSessionCookies(response: Response) {
+  response.headers.append(
+    "set-cookie",
+    buildSetCookieValue(ACCESS_TOKEN_COOKIE, "", 0),
+  );
+  response.headers.append(
+    "set-cookie",
+    buildSetCookieValue(REFRESH_TOKEN_COOKIE, "", 0),
+  );
+}
+
+async function readAuthError(response: Response, fallbackMessage: string) {
+  try {
+    const payload = (await response.json()) as SupabaseSessionResponse;
+    return payload.error_description ?? payload.message ?? payload.msg ?? payload.error ?? fallbackMessage;
+  } catch {
+    return fallbackMessage;
+  }
+}
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -84,32 +235,13 @@ function escapeHtml(value: string) {
     .replace(/"/g, "&quot;");
 }
 
-function renderAuthPage(
-  data: AuthorizationDetailsResponse,
-  requestUrl: string,
-  errorMessage?: string,
-) {
-  const scopes = data.scope?.split(/\s+/).filter(Boolean) ?? [];
-  const clientName = data.client?.name ?? "Unknown application";
-  const clientUri = data.client?.uri;
-  const userEmail = data.user?.email ?? "Unknown user";
-  const redirectUri = data.redirect_uri ?? "Unknown redirect URI";
-  const authorizationId = data.authorization_id ?? "";
-
-  const scopeMarkup = scopes.length > 0
-    ? scopes.map((scope) => `<li>${escapeHtml(scope)}</li>`).join("")
-    : "<li>No scopes were requested.</li>";
-
-  const errorMarkup = errorMessage
-    ? `<p class="error">${escapeHtml(errorMessage)}</p>`
-    : "";
-
+function renderPage(title: string, body: string) {
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Authorize ${escapeHtml(clientName)}</title>
+    <title>${escapeHtml(title)}</title>
     <style>
       :root {
         color-scheme: light;
@@ -145,7 +277,11 @@ function renderAuthPage(
         margin: 0 0 0.5rem;
         font-size: clamp(2rem, 3vw, 2.8rem);
       }
-      p, li { line-height: 1.6; }
+      h2 {
+        margin: 0 0 0.75rem;
+        font-size: 1.2rem;
+      }
+      p, li, label { line-height: 1.6; }
       .muted { color: var(--muted); }
       .error {
         border: 1px solid rgba(143, 45, 45, 0.2);
@@ -169,6 +305,23 @@ function renderAuthPage(
         gap: 1rem;
         margin-top: 2rem;
       }
+      .stack-form {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+      input {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: #fff;
+        color: var(--ink);
+        font: inherit;
+        padding: 0.85rem 1rem;
+      }
       button {
         appearance: none;
         border: 1px solid var(--border);
@@ -179,6 +332,7 @@ function renderAuthPage(
         font: inherit;
         padding: 0.85rem 1.35rem;
       }
+      button[type="submit"],
       button[type="submit"][value="approve"] {
         background: var(--accent);
         color: #fffaf4;
@@ -192,7 +346,34 @@ function renderAuthPage(
     </style>
   </head>
   <body>
-    <main>
+    <main>${body}</main>
+  </body>
+</html>`;
+}
+
+function renderAuthPage(
+  data: AuthorizationDetailsResponse,
+  requestUrl: string,
+  errorMessage?: string,
+) {
+  const scopes = data.scope?.split(/\s+/).filter(Boolean) ?? [];
+  const clientName = data.client?.name ?? "Unknown application";
+  const clientUri = data.client?.uri;
+  const userEmail = data.user?.email ?? "Unknown user";
+  const redirectUri = data.redirect_uri ?? "Unknown redirect URI";
+  const authorizationId = data.authorization_id ?? "";
+
+  const scopeMarkup = scopes.length > 0
+    ? scopes.map((scope) => `<li>${escapeHtml(scope)}</li>`).join("")
+    : "<li>No scopes were requested.</li>";
+
+  const errorMarkup = errorMessage
+    ? `<p class="error">${escapeHtml(errorMessage)}</p>`
+    : "";
+
+  return renderPage(
+    `Authorize ${clientName}`,
+    `
       <p class="muted">Supabase OAuth consent</p>
       <h1>Authorize ${escapeHtml(clientName)}</h1>
       <p>This application is requesting access to your MiseEnPlace MCP server through Supabase Auth.</p>
@@ -217,9 +398,44 @@ function renderAuthPage(
       <footer>
         This page is served by the MCP edge function and delegates OAuth state handling to Supabase Auth.
       </footer>
-    </main>
-  </body>
-</html>`;
+    `,
+  );
+}
+
+function renderLoginPage(
+  authorizationId: string,
+  requestUrl: string,
+  errorMessage?: string,
+) {
+  const errorMarkup = errorMessage
+    ? `<p class="error">${escapeHtml(errorMessage)}</p>`
+    : "";
+
+  return renderPage(
+    "Sign In To Continue",
+    `
+      <p class="muted">Supabase OAuth consent</p>
+      <h1>Sign in to continue</h1>
+      <p>This authorization request needs an authenticated Supabase user session before consent can be shown.</p>
+      ${errorMarkup}
+      <form method="post" action="${escapeHtml(requestUrl)}" class="stack-form">
+        <input type="hidden" name="intent" value="sign_in" />
+        <input type="hidden" name="authorization_id" value="${escapeHtml(authorizationId)}" />
+        <label class="field">
+          <span>Email</span>
+          <input type="email" name="email" autocomplete="email" required />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">Sign in</button>
+      </form>
+      <footer>
+        After sign-in, this page will resume the pending authorization request using the same authorization_id.
+      </footer>
+    `,
+  );
 }
 
 function renderErrorPage(message: string, status = 400) {
@@ -236,6 +452,7 @@ function renderErrorPage(message: string, status = 400) {
 
 export async function handleAuthorizationUi(c: Context) {
   const authorizationId = c.req.query("authorization_id");
+  const publicRequestUrl = getPublicRequestUrl(c.req.raw).toString();
 
   if (!authorizationId) {
     return renderErrorPage("Missing authorization_id query parameter.");
@@ -245,10 +462,19 @@ export async function handleAuthorizationUi(c: Context) {
     const detailsResponse = await fetchAuthorizationDetails(c.req.raw, authorizationId);
 
     if (detailsResponse.status === 401 || detailsResponse.status === 403) {
-      return renderErrorPage(
-        "You must be signed in before you can approve this authorization request.",
-        detailsResponse.status,
+      const loginResponse = c.html(
+        renderLoginPage(
+          authorizationId,
+          publicRequestUrl,
+          "Sign in first, then this authorization request will continue automatically.",
+        ),
       );
+
+      if (getCookieValue(c.req.raw, ACCESS_TOKEN_COOKIE) || getCookieValue(c.req.raw, REFRESH_TOKEN_COOKIE)) {
+        clearSessionCookies(loginResponse);
+      }
+
+      return loginResponse;
     }
 
     const data = (await detailsResponse.json()) as AuthorizationDetailsResponse;
@@ -264,7 +490,7 @@ export async function handleAuthorizationUi(c: Context) {
       return c.redirect(data.redirect_url, 302);
     }
 
-    return c.html(renderAuthPage(data, c.req.url));
+    return c.html(renderAuthPage(data, publicRequestUrl));
   } catch (error) {
     console.error("Failed to render authorization UI", error);
     return renderErrorPage("Failed to load authorization details.", 500);
@@ -274,18 +500,76 @@ export async function handleAuthorizationUi(c: Context) {
 export async function handleAuthorizationDecision(c: Context) {
   try {
     const formData = await c.req.formData();
+    const publicRequestUrl = getPublicRequestUrl(c.req.raw).toString();
     const authorizationId = formData.get("authorization_id");
-    const decision = formData.get("decision");
+    const intent = formData.get("intent");
 
     if (typeof authorizationId !== "string" || !authorizationId) {
       return renderErrorPage("Missing authorization_id form field.");
     }
+
+    if (intent === "sign_in") {
+      const email = formData.get("email");
+      const password = formData.get("password");
+
+      if (typeof email !== "string" || !email || typeof password !== "string" || !password) {
+        return c.html(
+          renderLoginPage(
+            authorizationId,
+            publicRequestUrl,
+            "Email and password are required to continue.",
+          ),
+        );
+      }
+
+      const signInResponse = await signInWithPassword(c.req.raw, email, password);
+
+      if (!signInResponse.ok) {
+        const message = await readAuthError(
+          signInResponse,
+          "Supabase Auth rejected the sign-in attempt.",
+        );
+
+        return c.html(renderLoginPage(authorizationId, publicRequestUrl, message));
+      }
+
+      const session = (await signInResponse.json()) as SupabaseSessionResponse;
+
+      if (!session.access_token) {
+        return c.html(
+          renderLoginPage(
+            authorizationId,
+            publicRequestUrl,
+            "Supabase Auth did not return an access token.",
+          ),
+        );
+      }
+
+      const response = c.redirect(publicRequestUrl, 302);
+      applySessionCookies(response, session);
+      return response;
+    }
+
+    const decision = formData.get("decision");
 
     if (decision !== "approve" && decision !== "deny") {
       return renderErrorPage("Decision must be approve or deny.");
     }
 
     const consentResponse = await submitConsentDecision(c.req.raw, authorizationId, decision);
+
+    if (consentResponse.status === 401 || consentResponse.status === 403) {
+      const loginResponse = c.html(
+        renderLoginPage(
+          authorizationId,
+          publicRequestUrl,
+          "Your Supabase session expired. Sign in again to finish this authorization request.",
+        ),
+      );
+      clearSessionCookies(loginResponse);
+      return loginResponse;
+    }
+
     const data = (await consentResponse.json()) as ConsentResponse;
 
     if (!consentResponse.ok || !data.redirect_url) {

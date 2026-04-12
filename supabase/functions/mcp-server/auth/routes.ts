@@ -6,8 +6,43 @@ import {
 } from "./handler.ts";
 import type { AuthAppVariables, ProtectedResourceMetadata } from "./types.ts";
 
-function getSupabaseProjectUrl(requestUrl: string) {
-  return Deno.env.get("SUPABASE_URL") ?? new URL(requestUrl).origin;
+const PUBLIC_FUNCTION_PREFIX = "/functions/v1";
+const INTERNAL_FUNCTION_PREFIX = "/mcp-server";
+
+function getPublicRequestUrl(request: Request) {
+  const internalUrl = new URL(request.url);
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  const forwardedPort = request.headers.get("x-forwarded-port");
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+  const host = forwardedHost ?? request.headers.get("host");
+  const protocol = forwardedProto ?? (origin ? new URL(origin).protocol.replace(/:$/, "") : internalUrl.protocol.replace(/:$/, ""));
+  const publicPathname = internalUrl.pathname.startsWith(INTERNAL_FUNCTION_PREFIX)
+    ? `${PUBLIC_FUNCTION_PREFIX}${internalUrl.pathname}`
+    : internalUrl.pathname;
+
+  if (origin) {
+    return new URL(`${origin}${publicPathname}${internalUrl.search}`);
+  }
+
+  if (referer) {
+    return new URL(`${new URL(referer).origin}${publicPathname}${internalUrl.search}`);
+  }
+
+  if (host) {
+    const hostWithPort = forwardedPort && !host.includes(":")
+      ? `${host}:${forwardedPort}`
+      : host;
+
+    return new URL(`${protocol}://${hostWithPort}${publicPathname}${internalUrl.search}`);
+  }
+
+  return new URL(`${internalUrl.origin}${publicPathname}${internalUrl.search}`);
+}
+
+function getSupabaseProjectUrl(request: Request) {
+  return Deno.env.get("SUPABASE_URL") ?? getPublicRequestUrl(request).origin;
 }
 
 function buildMcpResourceUrl(requestUrl: string) {
@@ -34,8 +69,9 @@ function buildResourceDocumentationUrl(requestUrl: string) {
     .replace(/\/auth\/.well-known\/oauth-protected-resource$/, "/");
 }
 
-function createProtectedResourceMetadata(requestUrl: string): ProtectedResourceMetadata {
-  const projectUrl = getSupabaseProjectUrl(requestUrl);
+function createProtectedResourceMetadata(request: Request): ProtectedResourceMetadata {
+  const requestUrl = getPublicRequestUrl(request).toString();
+  const projectUrl = getSupabaseProjectUrl(request);
 
   return {
     resource: buildMcpResourceUrl(requestUrl),
@@ -49,19 +85,19 @@ function createProtectedResourceMetadata(requestUrl: string): ProtectedResourceM
 
 export function registerAuthRoutes(app: Hono<{ Variables: AuthAppVariables }>) {
   app.get("/metadata", (c) => {
-    return c.json(createProtectedResourceMetadata(c.req.url));
+    return c.json(createProtectedResourceMetadata(c.req.raw));
   });
 
   app.get("/.well-known/oauth-protected-resource", (c) => {
-    return c.json(createProtectedResourceMetadata(c.req.url));
+    return c.json(createProtectedResourceMetadata(c.req.raw));
   });
 
   app.get("/auth/metadata", (c) => {
-    return c.json(createProtectedResourceMetadata(c.req.url));
+    return c.json(createProtectedResourceMetadata(c.req.raw));
   });
 
   app.get("/auth/.well-known/oauth-protected-resource", (c) => {
-    return c.json(createProtectedResourceMetadata(c.req.url));
+    return c.json(createProtectedResourceMetadata(c.req.raw));
   });
 
   app.get("/auth/authorize", handleAuthorizationUi);

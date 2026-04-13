@@ -1,6 +1,15 @@
 import { Hono } from "hono";
 
-import type { AuthAppVariables, ProtectedResourceMetadata } from "./types.ts";
+import type { AuthAppVariables } from "./jwt-middleware.ts";
+
+type ProtectedResourceMetadata = {
+  resource: string;
+  authorization_servers: string[];
+  bearer_methods_supported: ["header"];
+  scopes_supported: string[];
+  resource_name: string;
+  resource_documentation?: string;
+};
 
 export function createOAuthProtectedResourceApp(baseUrl: string) {
   const router = new Hono<{ Variables: AuthAppVariables }>();

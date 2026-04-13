@@ -3,12 +3,30 @@ import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import { Hono } from "hono";
 import type { Context } from "hono";
 
-import type {
-  AuthAppVariables,
-  AuthorizationDetailsResponse,
-  ConsentAction,
-  ConsentResponse,
-} from "./types.ts";
+import type { AuthAppVariables } from "./jwt-middleware.ts";
+
+type AuthorizationDetailsResponse = {
+  authorization_id?: string;
+  redirect_uri?: string;
+  client?: {
+    id?: string;
+    name?: string;
+    uri?: string;
+    logo_uri?: string;
+  };
+  user?: {
+    id?: string;
+    email?: string;
+  };
+  scope?: string;
+  redirect_url?: string;
+};
+
+type ConsentAction = "approve" | "deny";
+
+type ConsentResponse = {
+  redirect_url?: string;
+};
 
 const ACCESS_TOKEN_COOKIE = "mcp_access_token";
 const REFRESH_TOKEN_COOKIE = "mcp_refresh_token";

@@ -1,8 +1,16 @@
 import { createClient } from "@supabase/supabase-js";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { User, SupabaseClient } from "@supabase/supabase-js";
 import type { MiddlewareHandler } from "hono";
 
-import type { AuthAppVariables, TokenValidationResult } from "./types.ts";
+export type SupabaseAuthUser = User;
+
+export type AuthAppVariables = {
+  authUser: User;
+};
+
+type TokenValidationResult =
+  | { ok: true; user: User }
+  | { ok: false; status: 401 | 500; message: string };
 
 let _supabase: SupabaseClient | null = null;
 

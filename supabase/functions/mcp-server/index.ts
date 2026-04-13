@@ -6,9 +6,9 @@ import { Hono } from "hono";
 import { createClient } from "@supabase/supabase-js";
 
 import { createAuthMiddleware } from "./auth/jwt-middleware.ts";
+import type { AuthAppVariables } from "./auth/jwt-middleware.ts";
 import { createOAuthProtectedResourceApp } from "./auth/oauth-protected-resource.ts";
 import { createAuthUiApp } from "./auth/auth-ui.ts";
-import type { AuthAppVariables } from "./auth/types.ts";
 import { httpHandler, requestContext } from "./mcp/mcp.ts";
 
 // We create two Hono instances:

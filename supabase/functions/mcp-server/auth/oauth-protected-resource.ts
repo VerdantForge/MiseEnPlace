@@ -13,11 +13,11 @@ type ProtectedResourceMetadata = {
 
 export function createOAuthProtectedResourceApp(baseUrl: string) {
   const router = new Hono<{ Variables: AuthAppVariables }>();
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const authServerUrl = Deno.env.get("MCP_AUTH_SERVER_URL") ?? "http://127.0.0.1:54321/auth/v1";
 
   const metadata: ProtectedResourceMetadata = {
     resource: `${baseUrl}/mcp`,
-    authorization_servers: supabaseUrl ? [`${supabaseUrl}/auth/v1`] : [],
+    authorization_servers: [authServerUrl],
     bearer_methods_supported: ["header"],
     scopes_supported: ["openid", "email", "profile", "phone"],
     resource_name: "MiseEnPlace MCP Server",

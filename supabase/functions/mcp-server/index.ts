@@ -19,7 +19,7 @@ import { httpHandler, requestContext } from "./mcp/mcp.ts";
 const app = new Hono();
 const mcpApp = new Hono<{ Variables: AuthAppVariables }>();
 
-const baseUrl = Deno.env.get("MCP_SERVER_PUBLIC_URL") ?? "http://localhost:54321/functions/v1/mcp-server";
+const baseUrl = Deno.env.get("MCP_SERVER_PUBLIC_URL") ?? "http://127.0.0.1:54321/functions/v1/mcp-server";
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 

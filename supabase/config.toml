@@ -1,5 +1,5 @@
 
-# Minimal config for running only Edge Functions (no DB, storage, or studio)
+# Config for Supabase Edge Functions + Postgres DB
 project_id = "starter-mcp-supabase"
 
 [api]

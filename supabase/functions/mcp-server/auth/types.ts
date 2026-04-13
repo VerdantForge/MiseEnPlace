@@ -7,7 +7,7 @@ export type TokenValidationResult =
   | { ok: false; status: 401 | 500; message: string };
 
 export type AuthAppVariables = {
-  authUser: SupabaseAuthUser;
+  authUser: User;
 };
 
 export type ProtectedResourceMetadata = {

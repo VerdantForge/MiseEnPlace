@@ -1,12 +1,8 @@
 import { Hono } from "hono";
 
-import {
-  handleAuthorizationDecision,
-  handleAuthorizationUi,
-} from "./authorization-ui.ts";
 import type { AuthAppVariables, ProtectedResourceMetadata } from "./types.ts";
 
-export function createProtectedResourceMetadataRoutes(baseUrl: string) {
+export function createOAuthProtectedResourceApp(baseUrl: string) {
   const router = new Hono<{ Variables: AuthAppVariables }>();
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
 
@@ -20,15 +16,6 @@ export function createProtectedResourceMetadataRoutes(baseUrl: string) {
   };
 
   router.get("/", (c) => c.json(metadata));
-
-  return router;
-}
-
-export function createAuthorizationUiRoutes(baseUrl: string) {
-  const router = new Hono<{ Variables: AuthAppVariables }>();
-
-  router.get("/authorize", (c) => handleAuthorizationUi(c, baseUrl));
-  router.post("/authorize", (c) => handleAuthorizationDecision(c, baseUrl));
 
   return router;
 }

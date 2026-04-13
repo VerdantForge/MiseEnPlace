@@ -1,8 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Session, SupabaseClient } from "@supabase/supabase-js";
+import { Hono } from "hono";
 import type { Context } from "hono";
 
 import type {
+  AuthAppVariables,
   AuthorizationDetailsResponse,
   ConsentAction,
   ConsentResponse,
@@ -348,7 +350,7 @@ function renderErrorPage(message: string, status = 400) {
   );
 }
 
-export async function handleAuthorizationUi(c: Context, baseUrl: string) {
+async function handleAuthorizationUi(c: Context, baseUrl: string) {
   const authorizationId = c.req.query("authorization_id");
 
   if (!authorizationId) {
@@ -402,7 +404,7 @@ export async function handleAuthorizationUi(c: Context, baseUrl: string) {
   }
 }
 
-export async function handleAuthorizationDecision(c: Context, baseUrl: string) {
+async function handleAuthorizationDecision(c: Context, baseUrl: string) {
   try {
     const formData = await c.req.formData();
     const authorizationId = formData.get("authorization_id");
@@ -480,4 +482,13 @@ export async function handleAuthorizationDecision(c: Context, baseUrl: string) {
     console.error("Failed to submit authorization decision", error);
     return renderErrorPage("Failed to submit consent decision.", 500);
   }
+}
+
+export function createAuthUiApp(baseUrl: string) {
+  const router = new Hono<{ Variables: AuthAppVariables }>();
+
+  router.get("/authorize", (c) => handleAuthorizationUi(c, baseUrl));
+  router.post("/authorize", (c) => handleAuthorizationDecision(c, baseUrl));
+
+  return router;
 }

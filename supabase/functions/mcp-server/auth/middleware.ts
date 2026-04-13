@@ -3,7 +3,7 @@ import type { MiddlewareHandler } from "hono";
 import type { AuthAppVariables, TokenValidationResult } from "./types.ts";
 
 type AuthMiddlewareOptions = {
-  metadataUrl: (requestUrl: string) => string;
+  metadataUrl: string;
   requiredScope?: string;
 };
 
@@ -69,13 +69,12 @@ function buildChallenge(metadataUrl: string, requiredScope?: string): string {
 
 function unauthorizedResponse(
   message: string,
-  requestUrl: string,
-  metadataUrlBuilder: (requestUrl: string) => string,
+  metadataUrl: string,
   requiredScope?: string,
 ) {
   const headers = new Headers({
     "content-type": "application/json",
-    "WWW-Authenticate": buildChallenge(metadataUrlBuilder(requestUrl), requiredScope),
+    "WWW-Authenticate": buildChallenge(metadataUrl, requiredScope),
   });
 
   return new Response(
@@ -99,12 +98,10 @@ export function createAuthMiddleware(
     }
 
     const authorization = c.req.header("authorization");
-    const requestUrl = c.req.url;
 
     if (!authorization?.startsWith("Bearer ")) {
       return unauthorizedResponse(
         "Missing bearer access token",
-        requestUrl,
         options.metadataUrl,
         options.requiredScope,
       );
@@ -115,7 +112,6 @@ export function createAuthMiddleware(
     if (!accessToken) {
       return unauthorizedResponse(
         "Missing bearer access token",
-        requestUrl,
         options.metadataUrl,
         options.requiredScope,
       );
@@ -127,7 +123,6 @@ export function createAuthMiddleware(
       if (validationResult.status === 401) {
         return unauthorizedResponse(
           validationResult.message,
-          requestUrl,
           options.metadataUrl,
           options.requiredScope,
         );

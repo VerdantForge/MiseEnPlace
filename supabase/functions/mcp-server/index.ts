@@ -7,7 +7,7 @@ import { McpServer, StreamableHttpTransport } from "mcp-lite";
 import { z } from "zod";
 
 import { createAuthMiddleware } from "./auth/middleware.ts";
-import { buildMetadataUrl, registerAuthRoutes } from "./auth/routes.ts";
+import { createAuthorizationUiRoutes, createProtectedResourceMetadataRoutes } from "./auth/routes.ts";
 import type { AuthAppVariables } from "./auth/types.ts";
 
 // We create two Hono instances:
@@ -38,6 +38,8 @@ const httpHandler = transport.bind(mcp);
 const app = new Hono();
 const mcpApp = new Hono<{ Variables: AuthAppVariables }>();
 
+const baseUrl = Deno.env.get("MCP_SERVER_PUBLIC_URL") ?? "http://localhost:54321/functions/v1/mcp-server";
+
 mcpApp.get("/", (c) => {
   return c.json({
     message: "MCP Server on Supabase Edge Functions",
@@ -56,9 +58,10 @@ mcpApp.get("/health", (c) => {
   });
 });
 
-registerAuthRoutes(mcpApp);
+mcpApp.route("/.well-known/oauth-protected-resource", createProtectedResourceMetadataRoutes(baseUrl));
+mcpApp.route("/auth", createAuthorizationUiRoutes(baseUrl));
 
-mcpApp.use("/mcp", createAuthMiddleware({ metadataUrl: buildMetadataUrl }));
+mcpApp.use("/mcp", createAuthMiddleware({ metadataUrl: `${baseUrl}/.well-known/oauth-protected-resource` }));
 
 mcpApp.all("/mcp", async (c) => {
   const response = await httpHandler(c.req.raw);

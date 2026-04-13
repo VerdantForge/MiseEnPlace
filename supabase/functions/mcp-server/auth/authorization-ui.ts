@@ -9,8 +9,6 @@ import type {
 const ACCESS_TOKEN_COOKIE = "mcp_access_token";
 const REFRESH_TOKEN_COOKIE = "mcp_refresh_token";
 const AUTH_COOKIE_PATH = "/functions/v1/mcp-server/auth";
-const PUBLIC_FUNCTION_PREFIX = "/functions/v1";
-const INTERNAL_FUNCTION_PREFIX = "/mcp-server";
 
 type SupabaseSessionResponse = {
   access_token?: string;
@@ -21,38 +19,6 @@ type SupabaseSessionResponse = {
   msg?: string;
   message?: string;
 };
-
-function getPublicRequestUrl(request: Request) {
-  const internalUrl = new URL(request.url);
-  const forwardedHost = request.headers.get("x-forwarded-host");
-  const forwardedProto = request.headers.get("x-forwarded-proto");
-  const forwardedPort = request.headers.get("x-forwarded-port");
-  const origin = request.headers.get("origin");
-  const referer = request.headers.get("referer");
-  const host = forwardedHost ?? request.headers.get("host");
-  const protocol = forwardedProto ?? (origin ? new URL(origin).protocol.replace(/:$/, "") : internalUrl.protocol.replace(/:$/, ""));
-  const publicPathname = internalUrl.pathname.startsWith(INTERNAL_FUNCTION_PREFIX)
-    ? `${PUBLIC_FUNCTION_PREFIX}${internalUrl.pathname}`
-    : internalUrl.pathname;
-
-  if (origin) {
-    return new URL(`${origin}${publicPathname}${internalUrl.search}`);
-  }
-
-  if (referer) {
-    return new URL(`${new URL(referer).origin}${publicPathname}${internalUrl.search}`);
-  }
-
-  if (host) {
-    const hostWithPort = forwardedPort && !host.includes(":")
-      ? `${host}:${forwardedPort}`
-      : host;
-
-    return new URL(`${protocol}://${hostWithPort}${publicPathname}${internalUrl.search}`);
-  }
-
-  return new URL(`${internalUrl.origin}${publicPathname}${internalUrl.search}`);
-}
 
 function getSupabaseAuthBaseUrl() {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -104,18 +70,19 @@ function getAccessToken(request: Request) {
 
 function buildSupabaseHeaders(
   request: Request,
+  baseUrl: string,
   options?: {
     accessToken?: string | null;
     includeCookies?: boolean;
     includeAuthorization?: boolean;
   },
 ) {
-  const publicUrl = getPublicRequestUrl(request);
+  const publicOrigin = new URL(baseUrl).origin;
   const headers = new Headers({
     accept: "application/json",
     apikey: getSupabaseAnonKey(),
-    origin: publicUrl.origin,
-    referer: publicUrl.toString(),
+    origin: publicOrigin,
+    referer: baseUrl,
   });
 
   const includeCookies = options?.includeCookies ?? true;
@@ -134,22 +101,23 @@ function buildSupabaseHeaders(
   return headers;
 }
 
-function fetchAuthorizationDetails(request: Request, authorizationId: string) {
+function fetchAuthorizationDetails(request: Request, baseUrl: string, authorizationId: string) {
   return fetch(
     `${getSupabaseAuthBaseUrl()}/oauth/authorizations/${encodeURIComponent(authorizationId)}`,
     {
       method: "GET",
-      headers: buildSupabaseHeaders(request),
+      headers: buildSupabaseHeaders(request, baseUrl),
     },
   );
 }
 
 function submitConsentDecision(
   request: Request,
+  baseUrl: string,
   authorizationId: string,
   action: ConsentAction,
 ) {
-  const headers = buildSupabaseHeaders(request);
+  const headers = buildSupabaseHeaders(request, baseUrl);
   headers.set("content-type", "application/json");
 
   return fetch(
@@ -162,8 +130,8 @@ function submitConsentDecision(
   );
 }
 
-function signInWithPassword(request: Request, email: string, password: string) {
-  const headers = buildSupabaseHeaders(request, {
+function signInWithPassword(request: Request, baseUrl: string, email: string, password: string) {
+  const headers = buildSupabaseHeaders(request, baseUrl, {
     includeCookies: false,
     includeAuthorization: false,
   });
@@ -450,22 +418,22 @@ function renderErrorPage(message: string, status = 400) {
   );
 }
 
-export async function handleAuthorizationUi(c: Context) {
+export async function handleAuthorizationUi(c: Context, baseUrl: string) {
   const authorizationId = c.req.query("authorization_id");
-  const publicRequestUrl = getPublicRequestUrl(c.req.raw).toString();
+  const authorizeUrl = `${baseUrl}/auth/authorize?authorization_id=${encodeURIComponent(authorizationId ?? "")}`;
 
   if (!authorizationId) {
     return renderErrorPage("Missing authorization_id query parameter.");
   }
 
   try {
-    const detailsResponse = await fetchAuthorizationDetails(c.req.raw, authorizationId);
+    const detailsResponse = await fetchAuthorizationDetails(c.req.raw, baseUrl, authorizationId);
 
     if (detailsResponse.status === 401 || detailsResponse.status === 403) {
       const loginResponse = c.html(
         renderLoginPage(
           authorizationId,
-          publicRequestUrl,
+          authorizeUrl,
           "Sign in first, then this authorization request will continue automatically.",
         ),
       );
@@ -490,23 +458,24 @@ export async function handleAuthorizationUi(c: Context) {
       return c.redirect(data.redirect_url, 302);
     }
 
-    return c.html(renderAuthPage(data, publicRequestUrl));
+    return c.html(renderAuthPage(data, authorizeUrl));
   } catch (error) {
     console.error("Failed to render authorization UI", error);
     return renderErrorPage("Failed to load authorization details.", 500);
   }
 }
 
-export async function handleAuthorizationDecision(c: Context) {
+export async function handleAuthorizationDecision(c: Context, baseUrl: string) {
   try {
     const formData = await c.req.formData();
-    const publicRequestUrl = getPublicRequestUrl(c.req.raw).toString();
     const authorizationId = formData.get("authorization_id");
     const intent = formData.get("intent");
 
     if (typeof authorizationId !== "string" || !authorizationId) {
       return renderErrorPage("Missing authorization_id form field.");
     }
+
+    const authorizeUrl = `${baseUrl}/auth/authorize?authorization_id=${encodeURIComponent(authorizationId)}`;
 
     if (intent === "sign_in") {
       const email = formData.get("email");
@@ -516,13 +485,13 @@ export async function handleAuthorizationDecision(c: Context) {
         return c.html(
           renderLoginPage(
             authorizationId,
-            publicRequestUrl,
+            authorizeUrl,
             "Email and password are required to continue.",
           ),
         );
       }
 
-      const signInResponse = await signInWithPassword(c.req.raw, email, password);
+      const signInResponse = await signInWithPassword(c.req.raw, baseUrl, email, password);
 
       if (!signInResponse.ok) {
         const message = await readAuthError(
@@ -530,7 +499,7 @@ export async function handleAuthorizationDecision(c: Context) {
           "Supabase Auth rejected the sign-in attempt.",
         );
 
-        return c.html(renderLoginPage(authorizationId, publicRequestUrl, message));
+        return c.html(renderLoginPage(authorizationId, authorizeUrl, message));
       }
 
       const session = (await signInResponse.json()) as SupabaseSessionResponse;
@@ -539,13 +508,13 @@ export async function handleAuthorizationDecision(c: Context) {
         return c.html(
           renderLoginPage(
             authorizationId,
-            publicRequestUrl,
+            authorizeUrl,
             "Supabase Auth did not return an access token.",
           ),
         );
       }
 
-      const response = c.redirect(publicRequestUrl, 302);
+      const response = c.redirect(authorizeUrl, 302);
       applySessionCookies(response, session);
       return response;
     }
@@ -556,13 +525,13 @@ export async function handleAuthorizationDecision(c: Context) {
       return renderErrorPage("Decision must be approve or deny.");
     }
 
-    const consentResponse = await submitConsentDecision(c.req.raw, authorizationId, decision);
+    const consentResponse = await submitConsentDecision(c.req.raw, baseUrl, authorizationId, decision);
 
     if (consentResponse.status === 401 || consentResponse.status === 403) {
       const loginResponse = c.html(
         renderLoginPage(
           authorizationId,
-          publicRequestUrl,
+          authorizeUrl,
           "Your Supabase session expired. Sign in again to finish this authorization request.",
         ),
       );

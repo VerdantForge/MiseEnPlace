@@ -1,3 +1,5 @@
+import { createClient } from "@supabase/supabase-js";
+import type { Session, SupabaseClient } from "@supabase/supabase-js";
 import type { Context } from "hono";
 
 import type {
@@ -8,44 +10,30 @@ import type {
 
 const ACCESS_TOKEN_COOKIE = "mcp_access_token";
 const REFRESH_TOKEN_COOKIE = "mcp_refresh_token";
-const AUTH_COOKIE_PATH = "/functions/v1/mcp-server/auth";
 
-type SupabaseSessionResponse = {
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number;
-  error?: string;
-  error_description?: string;
-  msg?: string;
-  message?: string;
-};
-
-function getSupabaseAuthBaseUrl() {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-
-  if (!supabaseUrl) {
-    throw new Error("SUPABASE_URL is required to render the authorization UI");
-  }
-
-  return `${supabaseUrl}/auth/v1`;
+function requireEnv(name: string): string {
+  const value = Deno.env.get(name);
+  if (!value) throw new Error(`${name} is required`);
+  return value;
 }
 
-function getSupabaseAnonKey() {
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+const SUPABASE_URL = requireEnv("SUPABASE_URL");
+const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
+const SUPABASE_AUTH_BASE_URL = `${SUPABASE_URL}/auth/v1`;
 
-  if (!supabaseAnonKey) {
-    throw new Error("SUPABASE_ANON_KEY is required to render the authorization UI");
+let _supabase: SupabaseClient | null = null;
+
+function getSupabaseClient(): SupabaseClient {
+  if (!_supabase) {
+    _supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false },
+    });
   }
-
-  return supabaseAnonKey;
+  return _supabase;
 }
 
-function getCookieValue(request: Request, name: string) {
-  const cookieHeader = request.headers.get("cookie");
-
-  if (!cookieHeader) {
-    return null;
-  }
+function getCookieValue(cookieHeader: string | null, name: string) {
+  if (!cookieHeader) return null;
 
   for (const cookiePart of cookieHeader.split(";")) {
     const [cookieName, ...cookieValueParts] = cookiePart.trim().split("=");
@@ -58,96 +46,52 @@ function getCookieValue(request: Request, name: string) {
   return null;
 }
 
-function getAccessToken(request: Request) {
-  const authorization = request.headers.get("authorization");
-
-  if (authorization?.startsWith("Bearer ")) {
-    return authorization.slice("Bearer ".length).trim();
-  }
-
-  return getCookieValue(request, ACCESS_TOKEN_COOKIE);
+function buildAuthorizeUrl(baseUrl: string, authorizationId: string) {
+  return `${baseUrl}/auth/authorize?authorization_id=${encodeURIComponent(authorizationId)}`;
 }
 
-function buildSupabaseHeaders(
-  request: Request,
-  baseUrl: string,
-  options?: {
-    accessToken?: string | null;
-    includeCookies?: boolean;
-    includeAuthorization?: boolean;
-  },
+function fetchAuthorizationDetails(
+  authorizationId: string,
+  accessToken: string | null,
+  cookieHeader: string | null,
 ) {
-  const publicOrigin = new URL(baseUrl).origin;
   const headers = new Headers({
     accept: "application/json",
-    apikey: getSupabaseAnonKey(),
-    origin: publicOrigin,
-    referer: baseUrl,
+    apikey: SUPABASE_ANON_KEY,
   });
+  if (cookieHeader) headers.set("cookie", cookieHeader);
+  if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
 
-  const includeCookies = options?.includeCookies ?? true;
-  const includeAuthorization = options?.includeAuthorization ?? true;
-
-  const cookie = request.headers.get("cookie");
-  if (includeCookies && cookie) {
-    headers.set("cookie", cookie);
-  }
-
-  const accessToken = options?.accessToken ?? getAccessToken(request);
-  if (includeAuthorization && accessToken) {
-    headers.set("authorization", `Bearer ${accessToken}`);
-  }
-
-  return headers;
-}
-
-function fetchAuthorizationDetails(request: Request, baseUrl: string, authorizationId: string) {
   return fetch(
-    `${getSupabaseAuthBaseUrl()}/oauth/authorizations/${encodeURIComponent(authorizationId)}`,
-    {
-      method: "GET",
-      headers: buildSupabaseHeaders(request, baseUrl),
-    },
+    `${SUPABASE_AUTH_BASE_URL}/oauth/authorizations/${encodeURIComponent(authorizationId)}`,
+    { method: "GET", headers },
   );
 }
 
 function submitConsentDecision(
-  request: Request,
-  baseUrl: string,
   authorizationId: string,
   action: ConsentAction,
+  accessToken: string | null,
+  cookieHeader: string | null,
 ) {
-  const headers = buildSupabaseHeaders(request, baseUrl);
-  headers.set("content-type", "application/json");
+  const headers = new Headers({
+    accept: "application/json",
+    apikey: SUPABASE_ANON_KEY,
+    "content-type": "application/json",
+  });
+  if (cookieHeader) headers.set("cookie", cookieHeader);
+  if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
 
   return fetch(
-    `${getSupabaseAuthBaseUrl()}/oauth/authorizations/${encodeURIComponent(authorizationId)}/consent`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ action }),
-    },
+    `${SUPABASE_AUTH_BASE_URL}/oauth/authorizations/${encodeURIComponent(authorizationId)}/consent`,
+    { method: "POST", headers, body: JSON.stringify({ action }) },
   );
 }
 
-function signInWithPassword(request: Request, baseUrl: string, email: string, password: string) {
-  const headers = buildSupabaseHeaders(request, baseUrl, {
-    includeCookies: false,
-    includeAuthorization: false,
-  });
-  headers.set("content-type", "application/json");
-
-  return fetch(`${getSupabaseAuthBaseUrl()}/token?grant_type=password`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ email, password }),
-  });
-}
-
-function buildSetCookieValue(name: string, value: string, maxAge?: number) {
+function buildSetCookieValue(name: string, value: string, cookiePath: string, maxAge?: number) {
   const cookieParts = [
     `${name}=${value}`,
-    `Path=${AUTH_COOKIE_PATH}`,
+    `Path=${cookiePath}`,
     "HttpOnly",
     "SameSite=Lax",
   ];
@@ -159,40 +103,26 @@ function buildSetCookieValue(name: string, value: string, maxAge?: number) {
   return cookieParts.join("; ");
 }
 
-function applySessionCookies(response: Response, session: SupabaseSessionResponse) {
-  if (session.access_token) {
-    response.headers.append(
-      "set-cookie",
-      buildSetCookieValue(ACCESS_TOKEN_COOKIE, session.access_token, session.expires_in),
-    );
-  }
-
-  if (session.refresh_token) {
-    response.headers.append(
-      "set-cookie",
-      buildSetCookieValue(REFRESH_TOKEN_COOKIE, session.refresh_token),
-    );
-  }
-}
-
-function clearSessionCookies(response: Response) {
+function applySessionCookies(response: Response, session: Session, cookiePath: string) {
   response.headers.append(
     "set-cookie",
-    buildSetCookieValue(ACCESS_TOKEN_COOKIE, "", 0),
+    buildSetCookieValue(ACCESS_TOKEN_COOKIE, session.access_token, cookiePath, session.expires_in),
   );
   response.headers.append(
     "set-cookie",
-    buildSetCookieValue(REFRESH_TOKEN_COOKIE, "", 0),
+    buildSetCookieValue(REFRESH_TOKEN_COOKIE, session.refresh_token, cookiePath),
   );
 }
 
-async function readAuthError(response: Response, fallbackMessage: string) {
-  try {
-    const payload = (await response.json()) as SupabaseSessionResponse;
-    return payload.error_description ?? payload.message ?? payload.msg ?? payload.error ?? fallbackMessage;
-  } catch {
-    return fallbackMessage;
-  }
+function clearSessionCookies(response: Response, cookiePath: string) {
+  response.headers.append(
+    "set-cookie",
+    buildSetCookieValue(ACCESS_TOKEN_COOKIE, "", cookiePath, 0),
+  );
+  response.headers.append(
+    "set-cookie",
+    buildSetCookieValue(REFRESH_TOKEN_COOKIE, "", cookiePath, 0),
+  );
 }
 
 function escapeHtml(value: string) {
@@ -420,14 +350,21 @@ function renderErrorPage(message: string, status = 400) {
 
 export async function handleAuthorizationUi(c: Context, baseUrl: string) {
   const authorizationId = c.req.query("authorization_id");
-  const authorizeUrl = `${baseUrl}/auth/authorize?authorization_id=${encodeURIComponent(authorizationId ?? "")}`;
 
   if (!authorizationId) {
     return renderErrorPage("Missing authorization_id query parameter.");
   }
 
+  const authorizeUrl = buildAuthorizeUrl(baseUrl, authorizationId);
+  const cookiePath = new URL(baseUrl).pathname + "/auth";
+  const cookieHeader = c.req.raw.headers.get("cookie");
+  const authorization = c.req.raw.headers.get("authorization");
+  const accessToken = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : getCookieValue(cookieHeader, ACCESS_TOKEN_COOKIE);
+
   try {
-    const detailsResponse = await fetchAuthorizationDetails(c.req.raw, baseUrl, authorizationId);
+    const detailsResponse = await fetchAuthorizationDetails(authorizationId, accessToken, cookieHeader);
 
     if (detailsResponse.status === 401 || detailsResponse.status === 403) {
       const loginResponse = c.html(
@@ -438,8 +375,8 @@ export async function handleAuthorizationUi(c: Context, baseUrl: string) {
         ),
       );
 
-      if (getCookieValue(c.req.raw, ACCESS_TOKEN_COOKIE) || getCookieValue(c.req.raw, REFRESH_TOKEN_COOKIE)) {
-        clearSessionCookies(loginResponse);
+      if (getCookieValue(cookieHeader, ACCESS_TOKEN_COOKIE) || getCookieValue(cookieHeader, REFRESH_TOKEN_COOKIE)) {
+        clearSessionCookies(loginResponse, cookiePath);
       }
 
       return loginResponse;
@@ -475,7 +412,13 @@ export async function handleAuthorizationDecision(c: Context, baseUrl: string) {
       return renderErrorPage("Missing authorization_id form field.");
     }
 
-    const authorizeUrl = `${baseUrl}/auth/authorize?authorization_id=${encodeURIComponent(authorizationId)}`;
+    const authorizeUrl = buildAuthorizeUrl(baseUrl, authorizationId);
+    const cookiePath = new URL(baseUrl).pathname + "/auth";
+    const cookieHeader = c.req.raw.headers.get("cookie");
+    const authorization = c.req.raw.headers.get("authorization");
+    const accessToken = authorization?.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length).trim()
+      : getCookieValue(cookieHeader, ACCESS_TOKEN_COOKIE);
 
     if (intent === "sign_in") {
       const email = formData.get("email");
@@ -491,31 +434,15 @@ export async function handleAuthorizationDecision(c: Context, baseUrl: string) {
         );
       }
 
-      const signInResponse = await signInWithPassword(c.req.raw, baseUrl, email, password);
+      const { data: signInData, error } = await getSupabaseClient().auth.signInWithPassword({ email, password });
 
-      if (!signInResponse.ok) {
-        const message = await readAuthError(
-          signInResponse,
-          "Supabase Auth rejected the sign-in attempt.",
-        );
-
+      if (error || !signInData.session) {
+        const message = error?.message ?? "Supabase Auth did not return a session.";
         return c.html(renderLoginPage(authorizationId, authorizeUrl, message));
       }
 
-      const session = (await signInResponse.json()) as SupabaseSessionResponse;
-
-      if (!session.access_token) {
-        return c.html(
-          renderLoginPage(
-            authorizationId,
-            authorizeUrl,
-            "Supabase Auth did not return an access token.",
-          ),
-        );
-      }
-
       const response = c.redirect(authorizeUrl, 302);
-      applySessionCookies(response, session);
+      applySessionCookies(response, signInData.session, cookiePath);
       return response;
     }
 
@@ -525,7 +452,7 @@ export async function handleAuthorizationDecision(c: Context, baseUrl: string) {
       return renderErrorPage("Decision must be approve or deny.");
     }
 
-    const consentResponse = await submitConsentDecision(c.req.raw, baseUrl, authorizationId, decision);
+    const consentResponse = await submitConsentDecision(authorizationId, decision, accessToken, cookieHeader);
 
     if (consentResponse.status === 401 || consentResponse.status === 403) {
       const loginResponse = c.html(
@@ -535,7 +462,7 @@ export async function handleAuthorizationDecision(c: Context, baseUrl: string) {
           "Your Supabase session expired. Sign in again to finish this authorization request.",
         ),
       );
-      clearSessionCookies(loginResponse);
+      clearSessionCookies(loginResponse, cookiePath);
       return loginResponse;
     }
 

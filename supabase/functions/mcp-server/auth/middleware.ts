@@ -1,6 +1,22 @@
+import { createClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { MiddlewareHandler } from "hono";
 
 import type { AuthAppVariables, TokenValidationResult } from "./types.ts";
+
+let _supabase: SupabaseClient | null = null;
+
+function getSupabaseClient(): SupabaseClient | null {
+  if (_supabase) return _supabase;
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+
+  if (!supabaseUrl || !supabaseAnonKey) return null;
+
+  _supabase = createClient(supabaseUrl, supabaseAnonKey);
+  return _supabase;
+}
 
 type AuthMiddlewareOptions = {
   metadataUrl: string;
@@ -8,10 +24,9 @@ type AuthMiddlewareOptions = {
 };
 
 async function validateAccessToken(accessToken: string): Promise<TokenValidationResult> {
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const supabase = getSupabaseClient();
 
-  if (!supabaseUrl || !supabaseAnonKey) {
+  if (!supabase) {
     console.error("Missing SUPABASE_URL or SUPABASE_ANON_KEY for token validation");
     return {
       ok: false,
@@ -20,41 +35,25 @@ async function validateAccessToken(accessToken: string): Promise<TokenValidation
     };
   }
 
-  try {
-    const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        apikey: supabaseAnonKey,
-      },
-    });
+  const { data: { user }, error } = await supabase.auth.getUser(accessToken);
 
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: 401,
-        message: "Invalid or expired access token",
-      };
-    }
-
-    const user = (await response.json()) as AuthAppVariables["authUser"];
-
-    if (!user.id) {
-      return {
-        ok: false,
-        status: 401,
-        message: "Token did not resolve to a valid user",
-      };
-    }
-
-    return { ok: true, user };
-  } catch (error) {
-    console.error("Failed to validate OAuth access token", error);
+  if (error) {
     return {
       ok: false,
-      status: 500,
-      message: "Failed to validate access token",
+      status: 401,
+      message: "Invalid or expired access token",
     };
   }
+
+  if (!user) {
+    return {
+      ok: false,
+      status: 401,
+      message: "Token did not resolve to a valid user",
+    };
+  }
+
+  return { ok: true, user };
 }
 
 function buildChallenge(metadataUrl: string, requiredScope?: string): string {

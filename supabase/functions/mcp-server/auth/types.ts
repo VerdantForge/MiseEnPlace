@@ -1,13 +1,9 @@
-export type SupabaseAuthUser = {
-  id: string;
-  aud?: string;
-  email?: string | null;
-  role?: string;
-  [key: string]: unknown;
-};
+import type { User } from "@supabase/supabase-js";
+
+export type { User as SupabaseAuthUser };
 
 export type TokenValidationResult =
-  | { ok: true; user: SupabaseAuthUser }
+  | { ok: true; user: User }
   | { ok: false; status: 401 | 500; message: string };
 
 export type AuthAppVariables = {

@@ -6,7 +6,8 @@ A minimal, end-to-end demonstration of deploying a production-ready [Model Conte
 |---|---|
 | **Database** | Supabase Postgres with Row-Level Security — every query is scoped to the authenticated user |
 | **MCP API** | [mcp-lite](https://github.com/fiberplane/mcp-lite) over Streamable HTTP, hosted as a Supabase Edge Function |
-| **OAuth security** | Full [MCP Authorization](https://modelcontextprotocol.io/specification/draft/basic/authorization) flow — protected-resource metadata (RFC 9728), Supabase Auth sign-in UI, JWT validation middleware |
+| **OAuth security** | Full [MCP Authorization](https://modelcontextprotocol.io/specification/draft/basic/authorization) flow — protected-resource metadata (RFC 9728), static sign-in/consent UI on Netlify, JWT validation middleware |
+| **Auth UI** | Vite + TypeScript static site hosted on Netlify CDN — calls Supabase Auth APIs directly from the browser |
 
 This repo is intentionally kept small so the wiring between the three layers is easy to follow. The recipe CRUD tools are the running example, but the pattern applies to any data-backed MCP server.
 
@@ -17,8 +18,12 @@ This repo is intentionally kept small so the wiring between the three layers is 
 ```
 MCP client
   │
-  ├─ GET /.well-known/oauth-protected-resource   ← RFC 9728 metadata
-  ├─ GET /auth/authorize                         ← sign-in / consent UI (Supabase Auth)
+  ├─ GET /.well-known/oauth-protected-resource   ← RFC 9728 metadata (Edge Function)
+  ├─ GET https://<netlify-site>/authorize        ← sign-in / consent UI (Netlify CDN)
+  │        │
+  │        ├─ supabase.auth.signInWithPassword() ← direct browser → Supabase Auth
+  │        ├─ GET  /auth/v1/oauth/authorizations/{id}          ← browser → Supabase Auth
+  │        └─ POST /auth/v1/oauth/authorizations/{id}/consent  ← browser → Supabase Auth
   │
   └─ POST /mcp  (Bearer: <supabase-access-token>)
        │
@@ -27,27 +32,37 @@ MCP client
        └─ mcp-lite tools execute (listRecipes, createRecipe, …)
 ```
 
-All of the above runs inside a single Supabase Edge Function (`mcp-server`).
+The Edge Function handles MCP protocol and OAuth metadata only. The sign-in/consent UI is a
+pure static Vite + TypeScript site (in `site/`) deployed to Netlify. It calls Supabase Auth
+directly from the browser — no proxy needed.
 
 ---
 
 ## Project structure
 
 ```
+site/                                       # Netlify static auth UI (Vite + TypeScript)
+├── src/
+│   ├── main.ts                             # Sign-in / consent page logic
+│   └── styles.css                          # Warm, earthy design
+├── index.html
+├── package.json
+├── vite.config.ts
+└── tsconfig.json
 supabase/
 ├── functions/
 │   └── mcp-server/
-│       ├── index.ts                        # Hono router — wires auth + MCP routes
+│       ├── index.ts                        # Hono router — wires auth metadata + MCP routes
 │       ├── deno.json                       # Deno import map
 │       ├── auth/
 │       │   ├── jwt-middleware.ts           # Bearer-token validation (Supabase Auth)
-│       │   ├── oauth-protected-resource.ts # RFC 9728 metadata endpoint
-│       │   └── auth-ui.ts                  # Sign-in / consent UI + cookie handling
+│       │   └── oauth-protected-resource.ts # RFC 9728 metadata endpoint
 │       └── mcp/
 │           └── mcp.ts                      # mcp-lite server + tool definitions
 ├── migrations/
 │   └── 20260413000000_create_recipes.sql   # recipes table + RLS policies
 └── config.toml
+netlify.toml                                # Netlify build config (builds site/)
 ```
 
 ---
@@ -56,6 +71,7 @@ supabase/
 
 - [Supabase CLI](https://supabase.com/docs/guides/cli/getting-started)
 - [Deno](https://deno.land/) (required for Edge Functions)
+- [Node.js](https://nodejs.org/) v18+ (required for the Vite auth UI in `site/`)
 - Docker (used by `supabase start` for local Postgres)
 
 ---
@@ -66,25 +82,38 @@ supabase/
 # 1. Start local Supabase (Postgres + Auth + Edge runtime)
 supabase start
 
-# 2. Serve the function (JWT verification is handled inside the function, not by the platform)
+# 2. Serve the edge function
 supabase functions serve --no-verify-jwt mcp-server
+
+# 3. In a separate terminal, start the auth UI dev server
+cd site
+npm install
+npm run dev   # → http://localhost:5173/authorize?authorization_id=<id>
 ```
 
-Set `MCP_SERVER_PUBLIC_URL` in `supabase/functions/.env` (or `.env.local`) if you need a non-default base URL:
+Copy `site/.env.example` to `site/.env` and fill in your local Supabase credentials:
+
+```
+VITE_SUPABASE_URL=http://127.0.0.1:54321
+VITE_SUPABASE_ANON_KEY=<your-local-anon-key>
+```
+
+Set `MCP_SERVER_PUBLIC_URL` in `supabase/functions/.env` if you need a non-default base URL:
 
 ```
 MCP_SERVER_PUBLIC_URL=http://127.0.0.1:54321/functions/v1/mcp-server
 ```
 
-**Endpoints** (local):
+**Edge Function endpoints** (local):
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /` | Service index |
 | `GET /health` | Health check |
 | `GET /.well-known/oauth-protected-resource` | OAuth metadata (RFC 9728) |
-| `GET /auth/authorize` | Sign-in / consent UI |
 | `POST /mcp` | MCP Streamable HTTP (requires Bearer token) |
+
+The sign-in/consent UI is served by `npm run dev` in `site/` (or Netlify in production), not by the edge function.
 
 ---
 
@@ -106,36 +135,44 @@ supabase db push
 
 This creates the `recipes` table and RLS policies in your production Postgres instance.
 
-### 3. Set production secrets
+### 3. Deploy the auth UI to Netlify
 
-The `.env` file under `supabase/functions/mcp-server/` is **only used locally** — it is never deployed. Set both values as Supabase secrets instead:
+Connect your repo to Netlify. Netlify will auto-detect `netlify.toml` and build `site/` on every push.
+
+In the Netlify dashboard under **Site configuration → Environment variables**, set:
+
+| Variable | Value |
+|---|---|
+| `VITE_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
+| `VITE_SUPABASE_ANON_KEY` | Your Supabase project's `anon` public key |
+
+Note the Netlify site URL (e.g. `https://<site-name>.netlify.app`) — you will need it in the next step.
+
+### 4. Set production secrets
+
+The `.env` file under `supabase/functions/mcp-server/` is **only used locally** — it is never deployed. Set the required values as Supabase secrets instead:
 
 ```bash
 supabase secrets set \
   MCP_SERVER_PUBLIC_URL=https://<project-ref>.supabase.co/functions/v1/mcp-server \
-  MCP_AUTH_SERVER_URL=https://<project-ref>.supabase.co/auth/v1
+  MCP_AUTH_SERVER_URL=https://<project-ref>.supabase.co/auth/v1 \
+  MCP_AUTH_UI_URL=https://<site-name>.netlify.app
 ```
 
-`MCP_SERVER_PUBLIC_URL` is the single source of truth for every URL the function constructs (OAuth metadata, redirect URIs, cookie path). Once it starts with `https://`, the session cookies will automatically gain the `Secure` flag.
+`MCP_SERVER_PUBLIC_URL` is the single source of truth for every URL the function constructs (OAuth metadata, resource identifier). `MCP_AUTH_UI_URL` tells the `/auth/authorize` redirect stub where to send the browser after Supabase Auth hands off the flow.
 
-### 4. Configure Auth in the Supabase Dashboard
-
-Go to **Authentication → URL Configuration** and add the following to **Additional Redirect URLs**:
-
-```
-https://<project-ref>.supabase.co/functions/v1/mcp-server/auth/authorize
-```
+### 5. Configure Auth in the Supabase Dashboard
 
 Then go to **Authentication → OAuth Server** (enable it if it isn't already) and set:
 
 | Setting | Value |
 |---|---|
-| Authorization URL path | `/functions/v1/mcp-server/auth/authorize` |
+| Authorization URL | `/functions/v1/mcp-server/auth/authorize` |
 | Allow Dynamic Registration | ✓ enabled |
 
 > **Note:** `supabase/config.toml` configures these settings for local development only. The production equivalents must be set in the dashboard.
 
-### 5. Deploy the function
+### 6. Deploy the function
 
 Commit `deno.lock` first (ensures reproducible Deno dependency resolution on the edge runtime), then deploy:
 
@@ -148,7 +185,7 @@ supabase functions deploy --no-verify-jwt mcp-server
 
 `--no-verify-jwt` is intentional: Supabase's platform-level JWT check is bypassed because `auth/jwt-middleware.ts` handles authentication directly, which lets it return the RFC-compliant `WWW-Authenticate` header MCP clients expect.
 
-### 6. Verify
+### 7. Verify
 
 ```bash
 # Health check

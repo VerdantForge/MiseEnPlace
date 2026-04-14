@@ -1,0 +1,139 @@
+:root {
+  color-scheme: light;
+  font-family: Georgia, serif;
+  --bg: #f3eee7;
+  --card: #fffaf4;
+  --ink: #2c241b;
+  --muted: #6b5c4b;
+  --accent: #8b5e3c;
+  --border: #d8c7b5;
+  --danger: #8f2d2d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at top, rgba(139, 94, 60, 0.16), transparent 35%),
+    linear-gradient(180deg, #efe5d7 0%, var(--bg) 100%);
+  color: var(--ink);
+}
+
+main {
+  width: min(720px, calc(100vw - 2rem));
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 2rem;
+  box-shadow: 0 24px 80px rgba(75, 54, 35, 0.12);
+}
+
+h1 {
+  margin: 0 0 0.5rem;
+  font-size: clamp(2rem, 3vw, 2.8rem);
+}
+
+h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.2rem;
+}
+
+p,
+li,
+label {
+  line-height: 1.6;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  border: 1px solid rgba(143, 45, 45, 0.2);
+  background: rgba(143, 45, 45, 0.08);
+  color: var(--danger);
+  padding: 0.75rem 1rem;
+  border-radius: 12px;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.75rem 1rem;
+  margin: 1.5rem 0;
+}
+
+dt {
+  font-weight: 700;
+}
+
+dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+.stack-form {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+input {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  padding: 0.85rem 1rem;
+}
+
+button {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.85rem 1.35rem;
+}
+
+button[type="submit"] {
+  background: var(--accent);
+  color: #fffaf4;
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+footer {
+  margin-top: 1.5rem;
+  font-size: 0.92rem;
+  color: var(--muted);
+}

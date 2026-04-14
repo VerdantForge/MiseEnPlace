@@ -8,7 +8,6 @@ import { createClient } from "@supabase/supabase-js";
 import { createAuthMiddleware } from "./auth/jwt-middleware.ts";
 import type { AuthAppVariables } from "./auth/jwt-middleware.ts";
 import { createOAuthProtectedResourceApp } from "./auth/oauth-protected-resource.ts";
-import { createAuthUiApp } from "./auth/auth-ui.ts";
 import { httpHandler, requestContext } from "./mcp/mcp.ts";
 
 // We create two Hono instances:
@@ -20,6 +19,10 @@ const app = new Hono();
 const mcpApp = new Hono<{ Variables: AuthAppVariables }>();
 
 const baseUrl = Deno.env.get("MCP_SERVER_PUBLIC_URL") ?? "http://127.0.0.1:54321/functions/v1/mcp-server";
+// URL of the consent UI (Netlify in prod, Vite dev server locally).
+// Cannot be set as authorization_url_path in config.toml — that must be a path on the
+// Supabase server. So /auth/authorize redirects here instead.
+const authUiUrl = Deno.env.get("MCP_AUTH_UI_URL") ?? "http://localhost:5173";
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
@@ -30,7 +33,6 @@ mcpApp.get("/", (c) => {
       mcp: "/mcp",
       health: "/health",
       authMetadata: "/.well-known/oauth-protected-resource",
-      authUi: "/auth/authorize",
     },
   });
 });
@@ -42,7 +44,17 @@ mcpApp.get("/health", (c) => {
 });
 
 mcpApp.route("/.well-known/oauth-protected-resource", createOAuthProtectedResourceApp(baseUrl));
-mcpApp.route("/auth", createAuthUiApp(baseUrl));
+
+// Supabase Auth redirects the browser here (authorization_url_path). We immediately
+// bounce to the real consent UI, which lives on a different origin (Netlify / Vite).
+mcpApp.get("/auth/authorize", (c) => {
+  const authorizationId = c.req.query("authorization_id");
+  if (!authorizationId) {
+    return c.json({ error: "Missing authorization_id" }, 400);
+  }
+  const target = `${authUiUrl}/authorize?authorization_id=${encodeURIComponent(authorizationId)}`;
+  return c.redirect(target, 302);
+});
 
 mcpApp.use("/mcp", createAuthMiddleware({ metadataUrl: `${baseUrl}/.well-known/oauth-protected-resource` }));
 

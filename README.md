@@ -137,6 +137,14 @@ This creates the `recipes` table and RLS policies in your production Postgres in
 
 ### 3. Deploy the auth UI to Netlify
 
+Make sure the `site/` directory is committed to your repository — Netlify clones the repo fresh on every build and will fail if the directory is missing:
+
+```bash
+git add site/
+git commit -m "feat: add Netlify auth UI"
+git push
+```
+
 Connect your repo to Netlify. Netlify will auto-detect `netlify.toml` and build `site/` on every push.
 
 In the Netlify dashboard under **Site configuration → Environment variables**, set:
@@ -163,7 +171,20 @@ supabase secrets set \
 
 ### 5. Configure Auth in the Supabase Dashboard
 
-Then go to **Authentication → OAuth Server** (enable it if it isn't already) and set:
+#### URL Configuration
+
+Go to **Authentication → URL Configuration** and set:
+
+| Setting | Value |
+|---|---|
+| **Site URL** | `https://<site-name>.netlify.app` |
+| **Redirect URLs** | Add your MCP client callback URLs (e.g. `http://localhost:6274/oauth/callback`) |
+
+This is required so Supabase Auth trusts requests that originate from the Netlify domain. Without it, the browser's direct calls to `/auth/v1/oauth/authorizations/*` will be rejected with `"unauthorized request origin"`.
+
+#### OAuth Server
+
+Go to **Authentication → OAuth Server** (enable it if it isn't already) and set:
 
 | Setting | Value |
 |---|---|

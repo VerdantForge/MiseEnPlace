@@ -108,13 +108,17 @@ function submitConsentDecision(
   );
 }
 
-function buildSetCookieValue(name: string, value: string, cookiePath: string, maxAge?: number) {
+function buildSetCookieValue(name: string, value: string, cookiePath: string, maxAge?: number, secure = false) {
   const cookieParts = [
     `${name}=${value}`,
     `Path=${cookiePath}`,
     "HttpOnly",
     "SameSite=Lax",
   ];
+
+  if (secure) {
+    cookieParts.push("Secure");
+  }
 
   if (typeof maxAge === "number") {
     cookieParts.push(`Max-Age=${Math.max(0, Math.floor(maxAge))}`);
@@ -123,25 +127,25 @@ function buildSetCookieValue(name: string, value: string, cookiePath: string, ma
   return cookieParts.join("; ");
 }
 
-function applySessionCookies(response: Response, session: Session, cookiePath: string) {
+function applySessionCookies(response: Response, session: Session, cookiePath: string, secure: boolean) {
   response.headers.append(
     "set-cookie",
-    buildSetCookieValue(ACCESS_TOKEN_COOKIE, session.access_token, cookiePath, session.expires_in),
+    buildSetCookieValue(ACCESS_TOKEN_COOKIE, session.access_token, cookiePath, session.expires_in, secure),
   );
   response.headers.append(
     "set-cookie",
-    buildSetCookieValue(REFRESH_TOKEN_COOKIE, session.refresh_token, cookiePath),
+    buildSetCookieValue(REFRESH_TOKEN_COOKIE, session.refresh_token, cookiePath, undefined, secure),
   );
 }
 
-function clearSessionCookies(response: Response, cookiePath: string) {
+function clearSessionCookies(response: Response, cookiePath: string, secure: boolean) {
   response.headers.append(
     "set-cookie",
-    buildSetCookieValue(ACCESS_TOKEN_COOKIE, "", cookiePath, 0),
+    buildSetCookieValue(ACCESS_TOKEN_COOKIE, "", cookiePath, 0, secure),
   );
   response.headers.append(
     "set-cookie",
-    buildSetCookieValue(REFRESH_TOKEN_COOKIE, "", cookiePath, 0),
+    buildSetCookieValue(REFRESH_TOKEN_COOKIE, "", cookiePath, 0, secure),
   );
 }
 
@@ -377,6 +381,7 @@ async function handleAuthorizationUi(c: Context, baseUrl: string) {
 
   const authorizeUrl = buildAuthorizeUrl(baseUrl, authorizationId);
   const cookiePath = new URL(baseUrl).pathname + "/auth";
+  const secure = baseUrl.startsWith("https://");
   const cookieHeader = c.req.raw.headers.get("cookie");
   const authorization = c.req.raw.headers.get("authorization");
   const accessToken = authorization?.startsWith("Bearer ")
@@ -396,7 +401,7 @@ async function handleAuthorizationUi(c: Context, baseUrl: string) {
       );
 
       if (getCookieValue(cookieHeader, ACCESS_TOKEN_COOKIE) || getCookieValue(cookieHeader, REFRESH_TOKEN_COOKIE)) {
-        clearSessionCookies(loginResponse, cookiePath);
+        clearSessionCookies(loginResponse, cookiePath, secure);
       }
 
       return loginResponse;
@@ -434,6 +439,7 @@ async function handleAuthorizationDecision(c: Context, baseUrl: string) {
 
     const authorizeUrl = buildAuthorizeUrl(baseUrl, authorizationId);
     const cookiePath = new URL(baseUrl).pathname + "/auth";
+    const secure = baseUrl.startsWith("https://");
     const cookieHeader = c.req.raw.headers.get("cookie");
     const authorization = c.req.raw.headers.get("authorization");
     const accessToken = authorization?.startsWith("Bearer ")
@@ -462,7 +468,7 @@ async function handleAuthorizationDecision(c: Context, baseUrl: string) {
       }
 
       const response = c.redirect(authorizeUrl, 302);
-      applySessionCookies(response, signInData.session, cookiePath);
+      applySessionCookies(response, signInData.session, cookiePath, secure);
       return response;
     }
 
@@ -482,7 +488,7 @@ async function handleAuthorizationDecision(c: Context, baseUrl: string) {
           "Your Supabase session expired. Sign in again to finish this authorization request.",
         ),
       );
-      clearSessionCookies(loginResponse, cookiePath);
+      clearSessionCookies(loginResponse, cookiePath, secure);
       return loginResponse;
     }
 

@@ -88,19 +88,77 @@ MCP_SERVER_PUBLIC_URL=http://127.0.0.1:54321/functions/v1/mcp-server
 
 ---
 
-## Deploy to Supabase
+## Deploy to Supabase Cloud
+
+### 1. Link your project
 
 ```bash
+supabase link --project-ref <your-project-ref>
+```
+
+Your project ref is the string in your Supabase dashboard URL: `app.supabase.com/project/<ref>`.
+
+### 2. Apply the database migration
+
+```bash
+supabase db push
+```
+
+This creates the `recipes` table and RLS policies in your production Postgres instance.
+
+### 3. Set production secrets
+
+The `.env` file under `supabase/functions/mcp-server/` is **only used locally** — it is never deployed. Set both values as Supabase secrets instead:
+
+```bash
+supabase secrets set \
+  MCP_SERVER_PUBLIC_URL=https://<project-ref>.supabase.co/functions/v1/mcp-server \
+  MCP_AUTH_SERVER_URL=https://<project-ref>.supabase.co/auth/v1
+```
+
+`MCP_SERVER_PUBLIC_URL` is the single source of truth for every URL the function constructs (OAuth metadata, redirect URIs, cookie path). Once it starts with `https://`, the session cookies will automatically gain the `Secure` flag.
+
+### 4. Configure Auth in the Supabase Dashboard
+
+Go to **Authentication → URL Configuration** and add the following to **Additional Redirect URLs**:
+
+```
+https://<project-ref>.supabase.co/functions/v1/mcp-server/auth/authorize
+```
+
+Then go to **Authentication → OAuth Server** (enable it if it isn't already) and set:
+
+| Setting | Value |
+|---|---|
+| Authorization URL path | `/functions/v1/mcp-server/auth/authorize` |
+| Allow Dynamic Registration | ✓ enabled |
+
+> **Note:** `supabase/config.toml` configures these settings for local development only. The production equivalents must be set in the dashboard.
+
+### 5. Deploy the function
+
+Commit `deno.lock` first (ensures reproducible Deno dependency resolution on the edge runtime), then deploy:
+
+```bash
+git add supabase/functions/mcp-server/deno.lock
+git commit -m "chore: lock deno dependencies for deploy"
+
 supabase functions deploy --no-verify-jwt mcp-server
 ```
 
-Set the `MCP_SERVER_PUBLIC_URL` secret to your function's public URL:
+`--no-verify-jwt` is intentional: Supabase's platform-level JWT check is bypassed because `auth/jwt-middleware.ts` handles authentication directly, which lets it return the RFC-compliant `WWW-Authenticate` header MCP clients expect.
+
+### 6. Verify
 
 ```bash
-supabase secrets set MCP_SERVER_PUBLIC_URL=https://<project-ref>.supabase.co/functions/v1/mcp-server
+# Health check
+curl https://<project-ref>.supabase.co/functions/v1/mcp-server/health
+
+# OAuth metadata — resource and authorization_servers should show production https:// URLs
+curl https://<project-ref>.supabase.co/functions/v1/mcp-server/.well-known/oauth-protected-resource
 ```
 
-Your MCP endpoint will be at:
+Your MCP endpoint is at:
 
 ```
 https://<project-ref>.supabase.co/functions/v1/mcp-server/mcp

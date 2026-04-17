@@ -3,6 +3,9 @@
     "lib": ["deno.window", "deno.ns"],
     "strict": true
   },
+  "tasks": {
+    "test": "deno test --allow-env mcp/mcp.test.ts"
+  },
   "imports": {
     "@supabase/supabase-js": "npm:@supabase/supabase-js@^2",
     "hono": "npm:hono@^4.6.14",

@@ -29,11 +29,12 @@ const mcp = new McpServer({
 // ---------------------------------------------------------------------------
 
 mcp.tool("listRecipes", {
-  description: "List recipes belonging to the authenticated user. Optionally scope to a specific list.",
+  description: "List recipes belonging to the authenticated user. Optionally scope to a specific list or filter by tested status.",
   inputSchema: z.object({
     list_id: z.string().uuid().optional().describe("If provided, only return recipes in this list"),
+    tested: z.boolean().optional().describe("Filter by tested status. true = proven recipes you know, false = untried recipes to explore"),
   }),
-  handler: async (args: { list_id?: string }) => {
+  handler: async (args: { list_id?: string; tested?: boolean }) => {
     const db = getDb();
 
     if (args.list_id) {
@@ -51,11 +52,15 @@ mcp.tool("listRecipes", {
         return { content: [{ type: "text", text: "[]" }] };
       }
 
-      const { data, error } = await db
+      let query = db
         .from("recipes")
         .select("id, title, source, tested, created_at, updated_at")
         .in("id", ids)
         .order("created_at", { ascending: false });
+
+      if (args.tested !== undefined) query = query.eq("tested", args.tested);
+
+      const { data, error } = await query;
 
       if (error) {
         return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
@@ -63,10 +68,14 @@ mcp.tool("listRecipes", {
       return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
     }
 
-    const { data, error } = await db
+    let query = db
       .from("recipes")
       .select("id, title, source, tested, created_at, updated_at")
       .order("created_at", { ascending: false });
+
+    if (args.tested !== undefined) query = query.eq("tested", args.tested);
+
+    const { data, error } = await query;
 
     if (error) {
       return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
@@ -437,7 +446,7 @@ mcp.tool("deleteNote", {
 // ---------------------------------------------------------------------------
 
 mcp.tool("searchRecipes", {
-  description: "Search recipes by keyword. Optionally scope to specific fields or a list.",
+  description: "Search recipes by keyword. Optionally scope to specific fields, a list, or filter by tested status.",
   inputSchema: z.object({
     query: z.string().min(1).describe("The search term (case-insensitive)"),
     fields: z
@@ -445,8 +454,9 @@ mcp.tool("searchRecipes", {
       .optional()
       .describe("Which fields to search. Defaults to all: title, content, source, notes"),
     list_id: z.string().uuid().optional().describe("If provided, only search within this list"),
+    tested: z.boolean().optional().describe("Filter results by tested status. true = proven recipes, false = untried recipes"),
   }),
-  handler: async (args: { query: string; fields?: Array<"title" | "content" | "source" | "notes">; list_id?: string }) => {
+  handler: async (args: { query: string; fields?: Array<"title" | "content" | "source" | "notes">; list_id?: string; tested?: boolean }) => {
     const db = getDb();
     const fields = args.fields ?? ["title", "content", "source", "notes"];
     const q = args.query;
@@ -505,11 +515,15 @@ mcp.tool("searchRecipes", {
       return { content: [{ type: "text", text: "[]" }] };
     }
 
-    const { data, error } = await db
+    let finalQuery = db
       .from("recipes")
       .select("id, title, source, tested, variant_of, variant_label, created_at, updated_at")
       .in("id", ids)
       .order("created_at", { ascending: false });
+
+    if (args.tested !== undefined) finalQuery = finalQuery.eq("tested", args.tested);
+
+    const { data, error } = await finalQuery;
 
     if (error) {
       return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };

@@ -23,16 +23,6 @@ const mcp = new McpServer({
   schemaAdapter: (schema: unknown) => z.toJSONSchema(schema as z.ZodType),
 });
 
-mcp.tool("sum", {
-  description: "Adds two numbers together",
-  inputSchema: z.object({
-    a: z.number(),
-    b: z.number(),
-  }),
-  handler: (args: { a: number; b: number }) => ({
-    content: [{ type: "text", text: String(args.a + args.b) }],
-  }),
-});
 
 // ---------------------------------------------------------------------------
 // Recipes tools — full CRUD + list, scoped to the authenticated user via RLS

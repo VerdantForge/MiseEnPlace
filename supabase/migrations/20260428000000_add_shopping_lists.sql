@@ -1,31 +1,27 @@
 -- ---------------------------------------------------------------------------
--- Least-privilege role for email lookup
--- Runs as this role (not postgres) inside the SECURITY DEFINER function,
--- so a compromised function body cannot touch any public.* tables.
--- ---------------------------------------------------------------------------
-
-do $$ begin
-  if not exists (select 1 from pg_roles where rolname = 'email_lookup') then
-    create role email_lookup nologin noinherit;
-  end if;
-end $$;
-
-grant usage  on schema auth                   to email_lookup;
-grant select (id, email) on auth.users        to email_lookup;
-
--- ---------------------------------------------------------------------------
 -- Email → UUID lookup function
--- SECURITY DEFINER so it can read auth.users, but the privilege ceiling is
--- the email_lookup role (not postgres). Input arrives as a bind parameter
--- so there is no string interpolation — SQL injection is structurally impossible.
--- Only authenticated users may call this function.
+--
+-- SECURITY DEFINER lets it read auth.users (which the authenticated role
+-- cannot access directly). Hardened with:
+--   • set search_path = '' — fully-qualified names only; prevents schema-
+--     injection attacks where a shadowing public.users table could intercept
+--     the query.
+--   • revoke/grant — only the authenticated role may call this; anonymous
+--     callers and direct service-role access are excluded.
+--   • bind parameter (p_email) — input never enters query string construction
+--     so SQL injection is structurally impossible.
+--   • lower() + limit 1 — normalises input and caps result set.
+--
+-- Note: set role = 'email_lookup' would be tighter but requires superuser
+-- membership in the target role, which Supabase's hosted postgres role does
+-- not have. search_path hardening is the Supabase-recommended alternative.
 -- ---------------------------------------------------------------------------
 
 create or replace function public.lookup_user_id_by_email(p_email text)
 returns uuid
 language sql
 security definer
-set role = 'email_lookup'
+set search_path = ''
 stable
 as $$
   select id from auth.users where email = lower(p_email) limit 1;

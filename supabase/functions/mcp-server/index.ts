@@ -9,6 +9,7 @@ import { createAuthMiddleware } from "./auth/jwt-middleware.ts";
 import type { AuthAppVariables } from "./auth/jwt-middleware.ts";
 import { createOAuthProtectedResourceApp } from "./auth/oauth-protected-resource.ts";
 import { httpHandler, requestContext } from "./mcp/mcp.ts";
+import type { User } from "@supabase/supabase-js";
 
 // We create two Hono instances:
 // 1. `app` is the root handler for the Supabase Edge Function (must match the function name, e.g. /mcp-server)
@@ -67,7 +68,9 @@ mcpApp.all("/mcp", async (c) => {
     auth: { persistSession: false },
   });
 
-  return await requestContext.run({ supabase }, async () => {
+  const user = c.get("authUser") as User;
+
+  return await requestContext.run({ supabase, user }, async () => {
     const response = await httpHandler(c.req.raw);
     return response;
   });

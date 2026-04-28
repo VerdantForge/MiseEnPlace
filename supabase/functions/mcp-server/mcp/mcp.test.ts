@@ -8,7 +8,7 @@
 
 import { assert, assertEquals } from "jsr:@std/assert";
 import { httpHandler, requestContext } from "./mcp.ts";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 
 // ---------------------------------------------------------------------------
 // Mock fluent Supabase query builder
@@ -134,7 +134,8 @@ async function callTool(
   toolName: string,
   args: Record<string, unknown>,
 ) {
-  const injectDb = { supabase: db as unknown as SupabaseClient };
+  const mockUser = { id: "00000000-0000-0000-0000-000000000001" } as User;
+  const injectDb = { supabase: db as unknown as SupabaseClient, user: mockUser };
 
   // Initialize (some MCP implementations require this before tools/call)
   const initReq = new Request("http://localhost/mcp", {

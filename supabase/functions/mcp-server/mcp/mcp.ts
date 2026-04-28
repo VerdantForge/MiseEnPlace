@@ -1,16 +1,22 @@
 import { McpServer, StreamableHttpTransport } from "mcp-lite";
 import { z } from "zod";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 
-// Per-request Supabase client injected by the /mcp Hono handler after auth validation.
-// AsyncLocalStorage ensures each concurrent request sees its own client.
-export const requestContext = new AsyncLocalStorage<{ supabase: SupabaseClient }>();
+// Per-request context injected by the /mcp Hono handler after auth validation.
+// AsyncLocalStorage ensures each concurrent request sees its own client and user.
+export const requestContext = new AsyncLocalStorage<{ supabase: SupabaseClient; user: User }>();
 
 function getDb(): SupabaseClient {
   const ctx = requestContext.getStore();
   if (!ctx) throw new Error("No request context — tool called outside of an MCP request");
   return ctx.supabase;
+}
+
+function getUserId(): string {
+  const ctx = requestContext.getStore();
+  if (!ctx) throw new Error("No request context — tool called outside of an MCP request");
+  return ctx.user.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -592,7 +598,7 @@ mcp.tool("createShoppingList", {
     const db = getDb();
     const { data, error } = await db
       .from("shopping_lists")
-      .insert({ name: args.name })
+      .insert({ name: args.name, owner_id: getUserId() })
       .select("id, owner_id, name, created_at")
       .single();
 

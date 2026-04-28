@@ -1,16 +1,22 @@
 import { McpServer, StreamableHttpTransport } from "mcp-lite";
 import { z } from "zod";
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient, User } from "@supabase/supabase-js";
 
-// Per-request Supabase client injected by the /mcp Hono handler after auth validation.
-// AsyncLocalStorage ensures each concurrent request sees its own client.
-export const requestContext = new AsyncLocalStorage<{ supabase: SupabaseClient }>();
+// Per-request context injected by the /mcp Hono handler after auth validation.
+// AsyncLocalStorage ensures each concurrent request sees its own client and user.
+export const requestContext = new AsyncLocalStorage<{ supabase: SupabaseClient; user: User }>();
 
 function getDb(): SupabaseClient {
   const ctx = requestContext.getStore();
   if (!ctx) throw new Error("No request context — tool called outside of an MCP request");
   return ctx.supabase;
+}
+
+function getUserId(): string {
+  const ctx = requestContext.getStore();
+  if (!ctx) throw new Error("No request context — tool called outside of an MCP request");
+  return ctx.user.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +535,363 @@ mcp.tool("searchRecipes", {
       return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
     }
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Shopping list tools
+// ---------------------------------------------------------------------------
+// Permission model (enforced by RLS — no application-layer checks needed):
+//   • owner: full control including share/delete the list itself
+//   • member (shared): read + add/modify/remove items only
+
+mcp.tool("listShoppingLists", {
+  description: "List all shopping lists the authenticated user owns or has been shared on. Each entry includes a count of total items and how many have been acquired.",
+  inputSchema: z.object({}),
+  handler: async () => {
+    const db = getDb();
+    const { data: ownedLists, error: ownedListsError } = await db
+      .from("shopping_lists")
+      .select("id, owner_id, name, created_at, updated_at")
+      .order("created_at", { ascending: false });
+
+    if (ownedListsError) {
+      return { content: [{ type: "text", text: `Error: ${ownedListsError.message}` }], isError: true };
+    }
+    const { data: sharedShares, error: sharesError } = await db
+      .from("shopping_list_shares")
+      .select("list_id");
+
+    if (sharesError) {
+      return { content: [{ type: "text", text: `Error fetching shared lists: ${sharesError.message}` }], isError: true };
+    }
+
+    const listIdSet = new Set<string>();
+    const lists = [...(ownedLists ?? [])];
+    for (const list of lists) listIdSet.add(list.id);
+
+    for (const share of sharedShares ?? []) {
+      if (listIdSet.has(share.list_id)) continue;
+      const { data: sharedList, error: sharedListError } = await db
+        .from("shopping_lists")
+        .select("id, owner_id, name, created_at, updated_at")
+        .eq("id", share.list_id)
+        .single();
+
+      if (sharedListError) {
+        return { content: [{ type: "text", text: `Error fetching shared list ${share.list_id}: ${sharedListError.message}` }], isError: true };
+      }
+      if (sharedList) {
+        listIdSet.add(sharedList.id);
+        lists.push(sharedList);
+      }
+    }
+
+    if (lists.length === 0) {
+      return { content: [{ type: "text", text: "[]" }] };
+    }
+
+    lists.sort((a: { created_at: string }, b: { created_at: string }) => b.created_at.localeCompare(a.created_at));
+
+    const listIds = lists.map((l: { id: string }) => l.id);
+    const { data: items, error: itemsError } = await db
+      .from("shopping_list_items")
+      .select("list_id, acquired")
+      .in("list_id", listIds);
+
+    if (itemsError) {
+      return { content: [{ type: "text", text: `Error fetching item counts: ${itemsError.message}` }], isError: true };
+    }
+
+    const counts: Record<string, { total: number; acquired: number }> = {};
+    for (const item of items ?? []) {
+      if (!counts[item.list_id]) counts[item.list_id] = { total: 0, acquired: 0 };
+      counts[item.list_id].total++;
+      if (item.acquired) counts[item.list_id].acquired++;
+    }
+
+    const result = lists.map((l: { id: string; owner_id: string; name: string; created_at: string; updated_at: string }) => ({
+      ...l,
+      item_count: counts[l.id]?.total ?? 0,
+      acquired_count: counts[l.id]?.acquired ?? 0,
+    }));
+
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  },
+});
+
+mcp.tool("createShoppingList", {
+  description: "Create a new shopping list owned by the authenticated user",
+  inputSchema: z.object({
+    name: z.string().min(1).describe("Name of the shopping list, e.g. 'Weekly groceries' or 'BBQ Saturday'"),
+  }),
+  handler: async (args: { name: string }) => {
+    const db = getDb();
+    const { data, error } = await db
+      .from("shopping_lists")
+      .insert({ name: args.name, owner_id: getUserId() })
+      .select("id, owner_id, name, created_at")
+      .single();
+
+    if (error) {
+      return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+    }
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+});
+
+mcp.tool("updateShoppingList", {
+  description: "Rename a shopping list. Only the list owner may do this.",
+  inputSchema: z.object({
+    list_id: z.string().uuid(),
+    name: z.string().min(1),
+  }),
+  handler: async (args: { list_id: string; name: string }) => {
+    const db = getDb();
+    const { data, error } = await db
+      .from("shopping_lists")
+      .update({ name: args.name })
+      .eq("id", args.list_id)
+      .select("id, name, updated_at")
+      .single();
+
+    if (error) {
+      return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+    }
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+});
+
+mcp.tool("deleteShoppingList", {
+  description: "Delete a shopping list and all its items. Only the list owner may do this.",
+  inputSchema: z.object({
+    list_id: z.string().uuid(),
+  }),
+  handler: async (args: { list_id: string }) => {
+    const db = getDb();
+    const { error } = await db
+      .from("shopping_lists")
+      .delete()
+      .eq("id", args.list_id);
+
+    if (error) {
+      return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+    }
+    return { content: [{ type: "text", text: `Shopping list ${args.list_id} deleted.` }] };
+  },
+});
+
+mcp.tool("getShoppingList", {
+  description: "Get a shopping list with all its items, ordered by position. Also returns whether the caller is the owner or a shared member.",
+  inputSchema: z.object({
+    list_id: z.string().uuid(),
+  }),
+  handler: async (args: { list_id: string }) => {
+    const db = getDb();
+
+    const { data: list, error: listError } = await db
+      .from("shopping_lists")
+      .select("id, owner_id, name, created_at, updated_at")
+      .eq("id", args.list_id)
+      .single();
+
+    if (listError) {
+      return { content: [{ type: "text", text: `Error: ${listError.message}` }], isError: true };
+    }
+
+    const { data: shareRows, error: shareRowsError } = await db
+      .from("shopping_list_shares")
+      .select("user_id")
+      .eq("list_id", args.list_id);
+
+    if (shareRowsError) {
+      return { content: [{ type: "text", text: `Error checking list sharing: ${shareRowsError.message}` }], isError: true };
+    }
+
+    const { data: items, error: itemsError } = await db
+      .from("shopping_list_items")
+      .select("id, name, acquired, position, created_at, updated_at")
+      .eq("list_id", args.list_id)
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (itemsError) {
+      return { content: [{ type: "text", text: `Error fetching items: ${itemsError.message}` }], isError: true };
+    }
+
+    const { data: userData, error: userError } = await db.auth.getUser();
+    if (userError) {
+      return { content: [{ type: "text", text: `Error resolving current user: ${userError.message}` }], isError: true };
+    }
+
+    const role = userData.user.id === list.owner_id
+      ? "owner"
+      : (shareRows ?? []).some((row: { user_id: string }) => row.user_id === userData.user.id)
+      ? "member"
+      : "viewer";
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ ...list, role, items: items ?? [] }, null, 2),
+      }],
+    };
+  },
+});
+
+mcp.tool("addShoppingListItem", {
+  description: "Add an item to a shopping list. Available to the list owner and any shared member.",
+  inputSchema: z.object({
+    list_id: z.string().uuid(),
+    name: z.string().min(1).describe("Free-form item description, e.g. '2 lbs chicken thighs' or 'olive oil'"),
+    position: z.number().int().optional().describe("Display order hint (lower = earlier). Defaults to 0."),
+  }),
+  handler: async (args: { list_id: string; name: string; position?: number }) => {
+    const db = getDb();
+    const { data, error } = await db
+      .from("shopping_list_items")
+      .insert({
+        list_id: args.list_id,
+        name: args.name,
+        position: args.position ?? 0,
+      })
+      .select("id, list_id, name, acquired, position, created_at")
+      .single();
+
+    if (error) {
+      return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+    }
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+});
+
+mcp.tool("updateShoppingListItem", {
+  description: "Edit an item's name, toggle its acquired status, or change its position. Available to the list owner and any shared member.",
+  inputSchema: z.object({
+    item_id: z.string().uuid(),
+    name: z.string().min(1).optional().describe("New item name"),
+    acquired: z.boolean().optional().describe("true = item has been picked up, false = still needed"),
+    position: z.number().int().optional().describe("New display order hint"),
+  }),
+  handler: async (args: { item_id: string; name?: string; acquired?: boolean; position?: number }) => {
+    const updates: Record<string, unknown> = {};
+    if (args.name !== undefined) updates.name = args.name;
+    if (args.acquired !== undefined) updates.acquired = args.acquired;
+    if (args.position !== undefined) updates.position = args.position;
+
+    if (Object.keys(updates).length === 0) {
+      return { content: [{ type: "text", text: "Error: provide at least one field to update" }], isError: true };
+    }
+
+    const db = getDb();
+    const { data, error } = await db
+      .from("shopping_list_items")
+      .update(updates)
+      .eq("id", args.item_id)
+      .select("id, list_id, name, acquired, position, updated_at")
+      .single();
+
+    if (error) {
+      return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+    }
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  },
+});
+
+mcp.tool("removeShoppingListItem", {
+  description: "Remove an item from a shopping list. Available to the list owner and any shared member.",
+  inputSchema: z.object({
+    item_id: z.string().uuid(),
+  }),
+  handler: async (args: { item_id: string }) => {
+    const db = getDb();
+    const { error } = await db
+      .from("shopping_list_items")
+      .delete()
+      .eq("id", args.item_id);
+
+    if (error) {
+      return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+    }
+    return { content: [{ type: "text", text: `Item ${args.item_id} removed.` }] };
+  },
+});
+
+mcp.tool("shareShoppingList", {
+  description: "Share a shopping list with another user by their email address. Only the list owner may do this. The recipient gains immediate read and item-management access.",
+  inputSchema: z.object({
+    list_id: z.string().uuid(),
+    email: z.string().email().describe("Email address of the user to share with"),
+  }),
+  handler: async (args: { list_id: string; email: string }) => {
+    const db = getDb();
+
+    // Resolve email → UUID via the least-privilege SECURITY DEFINER function.
+    // The function lower()s the input and uses a bind parameter — no injection surface.
+    const { data: targetUserId, error: lookupError } = await db
+      .rpc("lookup_user_id_by_email", { p_email: args.email });
+
+    if (lookupError) {
+      return { content: [{ type: "text", text: `Error looking up user: ${lookupError.message}` }], isError: true };
+    }
+    if (!targetUserId) {
+      return { content: [{ type: "text", text: `No account found for ${args.email}.` }], isError: true };
+    }
+
+    // Prevent sharing with yourself (would be a no-op but confusing)
+    const { data: userData, error: userError } = await db.auth.getUser();
+    if (userError) {
+      return { content: [{ type: "text", text: `Error resolving current user: ${userError.message}` }], isError: true };
+    }
+    if (userData.user.id === targetUserId) {
+      return { content: [{ type: "text", text: "You cannot share a list with yourself." }], isError: true };
+    }
+
+    const { error: shareError } = await db
+      .from("shopping_list_shares")
+      .insert({ list_id: args.list_id, user_id: targetUserId });
+
+    if (shareError) {
+      // Unique constraint violation means the list is already shared with this user
+      if (shareError.code === "23505") {
+        return { content: [{ type: "text", text: `List is already shared with ${args.email}.` }] };
+      }
+      return { content: [{ type: "text", text: `Error: ${shareError.message}` }], isError: true };
+    }
+
+    return { content: [{ type: "text", text: `Shopping list shared with ${args.email}.` }] };
+  },
+});
+
+mcp.tool("unshareShoppingList", {
+  description: "Revoke a user's access to a shared shopping list by their email address. Only the list owner may do this.",
+  inputSchema: z.object({
+    list_id: z.string().uuid(),
+    email: z.string().email().describe("Email address of the user to remove"),
+  }),
+  handler: async (args: { list_id: string; email: string }) => {
+    const db = getDb();
+
+    const { data: targetUserId, error: lookupError } = await db
+      .rpc("lookup_user_id_by_email", { p_email: args.email });
+
+    if (lookupError) {
+      return { content: [{ type: "text", text: `Error looking up user: ${lookupError.message}` }], isError: true };
+    }
+    if (!targetUserId) {
+      return { content: [{ type: "text", text: `No account found for ${args.email}.` }], isError: true };
+    }
+
+    const { error } = await db
+      .from("shopping_list_shares")
+      .delete()
+      .eq("list_id", args.list_id)
+      .eq("user_id", targetUserId);
+
+    if (error) {
+      return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
+    }
+    return { content: [{ type: "text", text: `Access revoked for ${args.email}.` }] };
   },
 });
 

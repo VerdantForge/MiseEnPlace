@@ -3,6 +3,7 @@
     "lib": ["deno.window", "deno.ns"],
     "strict": true
   },
+  "nodeModulesDir": "auto",
   "tasks": {
     "test": "deno test --allow-env mcp/mcp.test.ts"
   },

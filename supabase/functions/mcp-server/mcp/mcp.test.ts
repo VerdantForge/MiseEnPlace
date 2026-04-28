@@ -321,6 +321,7 @@ Deno.test("searchRecipes: tested filter applies alongside list_id scope", async 
 Deno.test("listShoppingLists: queries shopping_lists then shopping_list_items", async () => {
   const db = createMockDb({
     shopping_lists: [[{ id: FAKE_SHOPPING_LIST_ID, owner_id: FAKE_USER_ID, name: "Weekly", created_at: "", updated_at: "" }]],
+    shopping_list_shares: [[]],
     shopping_list_items: [[{ list_id: FAKE_SHOPPING_LIST_ID, acquired: false }]],
   });
   const res = await callTool(db, "listShoppingLists", {});
@@ -332,10 +333,25 @@ Deno.test("listShoppingLists: queries shopping_lists then shopping_list_items", 
 });
 
 Deno.test("listShoppingLists: returns empty array when user has no lists", async () => {
-  const db = createMockDb({ shopping_lists: [[]] });
+  const db = createMockDb({ shopping_lists: [[]], shopping_list_shares: [[]] });
   const res = await callTool(db, "listShoppingLists", {});
   assert(!res.result?.isError, "expected no error");
   assertEquals(res.result?.content[0].text, "[]");
+});
+
+Deno.test("listShoppingLists: includes shared lists for the caller", async () => {
+  const db = createMockDb({
+    shopping_lists: [[{ id: FAKE_SHOPPING_LIST_ID, owner_id: FAKE_OTHER_USER_ID, name: "Shared", created_at: "2026-01-01", updated_at: "2026-01-01" }]],
+    shopping_list_shares: [[{ list_id: FAKE_SHOPPING_LIST_ID }]],
+    shopping_list_items: [[{ list_id: FAKE_SHOPPING_LIST_ID, acquired: true }]],
+  });
+  const res = await callTool(db, "listShoppingLists", {});
+  assert(!res.result?.isError, "expected no error");
+  const body = JSON.parse(res.result!.content[0].text);
+  assertEquals(body.length, 1);
+  assertEquals(body[0].id, FAKE_SHOPPING_LIST_ID);
+  assertEquals(body[0].item_count, 1);
+  assertEquals(body[0].acquired_count, 1);
 });
 
 // --- createShoppingList -----------------------------------------------------
@@ -390,6 +406,7 @@ Deno.test("getShoppingList: returns role=owner when caller is owner", async () =
   const db = createMockDb(
     {
       shopping_lists: [[{ id: FAKE_SHOPPING_LIST_ID, owner_id: FAKE_USER_ID, name: "Weekly", created_at: "", updated_at: "" }]],
+      shopping_list_shares: [[]],
       shopping_list_items: [[{ id: FAKE_ITEM_ID, name: "Milk", acquired: false, position: 0, created_at: "", updated_at: "" }]],
     },
     { authUserId: FAKE_USER_ID },
@@ -405,6 +422,7 @@ Deno.test("getShoppingList: returns role=member when caller is not owner", async
   const db = createMockDb(
     {
       shopping_lists: [[{ id: FAKE_SHOPPING_LIST_ID, owner_id: FAKE_OTHER_USER_ID, name: "Weekly", created_at: "", updated_at: "" }]],
+      shopping_list_shares: [[{ user_id: FAKE_USER_ID }]],
       shopping_list_items: [[]],
     },
     { authUserId: FAKE_USER_ID },
@@ -419,6 +437,7 @@ Deno.test("getShoppingList: items ordered by position then created_at", async ()
   const db = createMockDb(
     {
       shopping_lists: [[{ id: FAKE_SHOPPING_LIST_ID, owner_id: FAKE_USER_ID, name: "Weekly", created_at: "", updated_at: "" }]],
+      shopping_list_shares: [[]],
       shopping_list_items: [[]],
     },
     { authUserId: FAKE_USER_ID },
@@ -429,6 +448,21 @@ Deno.test("getShoppingList: items ordered by position then created_at", async ()
   const orderCalls = b.calls.filter((c) => c.method === "order");
   assert(orderCalls.some((c) => c.args[0] === "position"), "expected order by position");
   assert(orderCalls.some((c) => c.args[0] === "created_at"), "expected order by created_at");
+});
+
+Deno.test("getShoppingList: returns viewer when list is not shared with caller", async () => {
+  const db = createMockDb(
+    {
+      shopping_lists: [[{ id: FAKE_SHOPPING_LIST_ID, owner_id: FAKE_OTHER_USER_ID, name: "Weekly", created_at: "", updated_at: "" }]],
+      shopping_list_shares: [[]],
+      shopping_list_items: [[]],
+    },
+    { authUserId: FAKE_USER_ID },
+  );
+  const res = await callTool(db, "getShoppingList", { list_id: FAKE_SHOPPING_LIST_ID });
+  assert(!res.result?.isError, "expected no error");
+  const body = JSON.parse(res.result!.content[0].text);
+  assertEquals(body.role, "viewer");
 });
 
 // --- addShoppingListItem ----------------------------------------------------

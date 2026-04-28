@@ -550,17 +550,48 @@ mcp.tool("listShoppingLists", {
   inputSchema: z.object({}),
   handler: async () => {
     const db = getDb();
-    const { data: lists, error: listsError } = await db
+    const { data: ownedLists, error: ownedListsError } = await db
       .from("shopping_lists")
       .select("id, owner_id, name, created_at, updated_at")
       .order("created_at", { ascending: false });
 
-    if (listsError) {
-      return { content: [{ type: "text", text: `Error: ${listsError.message}` }], isError: true };
+    if (ownedListsError) {
+      return { content: [{ type: "text", text: `Error: ${ownedListsError.message}` }], isError: true };
     }
-    if (!lists || lists.length === 0) {
+    const { data: sharedShares, error: sharesError } = await db
+      .from("shopping_list_shares")
+      .select("list_id");
+
+    if (sharesError) {
+      return { content: [{ type: "text", text: `Error fetching shared lists: ${sharesError.message}` }], isError: true };
+    }
+
+    const listIdSet = new Set<string>();
+    const lists = [...(ownedLists ?? [])];
+    for (const list of lists) listIdSet.add(list.id);
+
+    for (const share of sharedShares ?? []) {
+      if (listIdSet.has(share.list_id)) continue;
+      const { data: sharedList, error: sharedListError } = await db
+        .from("shopping_lists")
+        .select("id, owner_id, name, created_at, updated_at")
+        .eq("id", share.list_id)
+        .single();
+
+      if (sharedListError) {
+        return { content: [{ type: "text", text: `Error fetching shared list ${share.list_id}: ${sharedListError.message}` }], isError: true };
+      }
+      if (sharedList) {
+        listIdSet.add(sharedList.id);
+        lists.push(sharedList);
+      }
+    }
+
+    if (lists.length === 0) {
       return { content: [{ type: "text", text: "[]" }] };
     }
+
+    lists.sort((a: { created_at: string }, b: { created_at: string }) => b.created_at.localeCompare(a.created_at));
 
     const listIds = lists.map((l: { id: string }) => l.id);
     const { data: items, error: itemsError } = await db
@@ -668,6 +699,15 @@ mcp.tool("getShoppingList", {
       return { content: [{ type: "text", text: `Error: ${listError.message}` }], isError: true };
     }
 
+    const { data: shareRows, error: shareRowsError } = await db
+      .from("shopping_list_shares")
+      .select("user_id")
+      .eq("list_id", args.list_id);
+
+    if (shareRowsError) {
+      return { content: [{ type: "text", text: `Error checking list sharing: ${shareRowsError.message}` }], isError: true };
+    }
+
     const { data: items, error: itemsError } = await db
       .from("shopping_list_items")
       .select("id, name, acquired, position, created_at, updated_at")
@@ -684,7 +724,11 @@ mcp.tool("getShoppingList", {
       return { content: [{ type: "text", text: `Error resolving current user: ${userError.message}` }], isError: true };
     }
 
-    const role = userData.user.id === list.owner_id ? "owner" : "member";
+    const role = userData.user.id === list.owner_id
+      ? "owner"
+      : (shareRows ?? []).some((row: { user_id: string }) => row.user_id === userData.user.id)
+      ? "member"
+      : "viewer";
 
     return {
       content: [{
